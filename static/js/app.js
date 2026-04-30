@@ -92,15 +92,15 @@ class StatusBar extends BaseComponent {
       const d = await this.#api.getStatus();
       if (d.status === "connected") {
         this.#dot.className = "status-dot connected";
-        this.#text.textContent = "Ollama connected";
+        this.#text.textContent = "Groq connected";
         this.#models = d.models || [];
         this.#populate(d.current_model);
       } else this.#disconnected(d.error);
-    } catch { this.#disconnected("Cannot reach Ollama"); }
+    } catch { this.#disconnected("Cannot reach Groq"); }
   }
   #disconnected(msg) {
     this.#dot.className = "status-dot disconnected";
-    this.#text.textContent = "Ollama offline";
+    this.#text.textContent = "Groq offline";
     this.#select.innerHTML = `<option>${msg || "Not connected"}</option>`;
   }
   #populate(current) {

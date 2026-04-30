@@ -1,11 +1,7 @@
-flask>=3.0.0
-flask-cors>=4.0.0
-requests>=2.31.0
-
-# File processing
-pymupdf>=1.23.0          # PDF reading (fitz)
-python-docx>=1.1.0       # DOCX reading
-
-# OCR (optional — requires Tesseract binary installed on system)
-pytesseract>=0.3.10
-Pillow>=10.0.0
+flask
+flask-cors
+requests
+pymupdf
+python-docx
+Pillow
+gunicorn

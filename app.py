@@ -2,6 +2,7 @@
 EssayMind — AI Essay Evaluator (Flask Backend)
 OOP: Abstraction, Encapsulation, Inheritance, Polymorphism
 Deterministic scoring: SHA-256 hash of essay content + rubric config
+Powered by Groq API (replaces Ollama)
 """
 import os, json, uuid, re, hashlib, logging
 from abc import ABC, abstractmethod
@@ -38,9 +39,23 @@ CORS(app)
 
 UPLOAD_FOLDER = Path("uploads")
 DATA_FOLDER   = Path("data")
-OLLAMA_URL    = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_MODEL  = os.environ.get("OLLAMA_MODEL", "llama3.2")
-ALLOWED_EXT   = {".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+
+# ── Groq config ───────────────────────────────────────────────
+GROQ_API_KEY   = os.environ.get("GROQ_API_KEY", "")
+GROQ_MODEL     = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_API_URL   = "https://api.groq.com/openai/v1/chat/completions"
+
+# Available Groq models (shown in sidebar dropdown)
+GROQ_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "llama3-70b-8192",
+    "llama3-8b-8192",
+    "mixtral-8x7b-32768",
+    "gemma2-9b-it",
+]
+
+ALLOWED_EXT = {".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
 UPLOAD_FOLDER.mkdir(exist_ok=True)
 DATA_FOLDER.mkdir(exist_ok=True)
@@ -132,11 +147,6 @@ class Rubric:
     def cache_key(self):
         return json.dumps([{"id":c["id"],"weight":c["weight"]} for c in self._criteria], sort_keys=True)
     def strictness_level(self) -> str:
-        """
-        Determine strictness based on how unevenly weights are distributed.
-        If any single criterion has high weight (>25) that criterion is graded harshly.
-        Overall: we judge by the MAX weight — a 40% weighted criterion means very strict on that aspect.
-        """
         weights = [c["weight"] for c in self._criteria]
         max_w = max(weights) if weights else 20
         if max_w >= 30:   return "strict"
@@ -203,17 +213,11 @@ class ChatHistoryManager:
 
 # ── INHERITANCE: EssayEvaluator ───────────────────────────────
 class EssayEvaluator(BaseEvaluator):
-    def __init__(self, model=OLLAMA_MODEL, base_url=OLLAMA_URL):
-        self._model = model; self._base_url = base_url
+    def __init__(self, model=None):
+        self._model = model or GROQ_MODEL
 
     def build_prompt(self, text: str, rubric: Rubric) -> str:
-        """
-        Build a prompt that produces VALID JSON with no placeholder text.
-        Key fix: use concrete numeric examples (not <integer> placeholders)
-        and make rubric strictness affect scoring through explicit score ranges.
-        """
         strictness = rubric.strictness_level()
-        # Per-criterion score expectations based on strictness
         score_ranges = {
             "strict":            {"excellent":88, "good":72, "average":55, "poor":38},
             "moderately_strict": {"excellent":90, "good":78, "average":62, "poor":45},
@@ -232,10 +236,7 @@ class EssayEvaluator(BaseEvaluator):
             criteria_lines.append(f"  - {c['label']} [{note}]: {c['description']}")
 
         criteria_text = "\n".join(criteria_lines)
-        ids = [c["id"] for c in rubric.criteria]
 
-        # Build a CONCRETE example score block (no angle-bracket placeholders)
-        # so the AI returns valid JSON and understands the structure
         example_scores = []
         for c in rubric.criteria:
             example_scores.append(f'    "{c["id"]}": {{"score": 75, "feedback": "Replace this with specific feedback about this criterion."}}')
@@ -320,15 +321,13 @@ IMPORTANT QUANTITY RULES based on the essay quality:
 Scale the feedback to match the quality — a poor essay needs more corrections, a great essay deserves more praise."""
 
     def evaluate(self, text: str, rubric: Rubric) -> dict:
-        raw    = self._call_ollama(self.build_prompt(text, rubric))
+        raw    = self._call_groq(self.build_prompt(text, rubric))
         result = self.parse_response(raw)
         result["word_count"]  = len(text.split())
         result["char_count"]  = len(text)
         result["rubric_used"] = [c["label"] for c in rubric.criteria]
 
         # ── Enforce honest scoring ──────────────────────────────────────────
-        # Recompute overall_score from criterion scores in Python.
-        # This prevents the model from returning 0s on all criteria but 75 overall.
         scores_data = result.get("scores", {})
         if scores_data and isinstance(scores_data, dict):
             total_weight = 0
@@ -342,7 +341,6 @@ Scale the feedback to match the quality — a poor essay needs more corrections,
                 else:
                     raw_score = data
                 sc = max(0, min(100, int(float(raw_score or 0))))
-                # Write normalised score back
                 if isinstance(scores_data.get(cid), dict):
                     scores_data[cid]["score"] = sc
                 weighted_sum += sc * wgt
@@ -350,10 +348,7 @@ Scale the feedback to match the quality — a poor essay needs more corrections,
 
             if total_weight > 0:
                 computed = round(weighted_sum / total_weight)
-                # Override model's overall_score with the real weighted average
                 result["overall_score"] = computed
-
-                # Derive grade from real score
                 if computed >= 93:   result["grade"] = "A+"
                 elif computed >= 90: result["grade"] = "A"
                 elif computed >= 87: result["grade"] = "A-"
@@ -366,7 +361,7 @@ Scale the feedback to match the quality — a poor essay needs more corrections,
                 elif computed >= 60: result["grade"] = "D"
                 else:                result["grade"] = "F"
 
-        # ── Run AI detection as a separate, independent call ────────────────
+        # ── Run AI detection ────────────────────────────────────────────────
         try:
             result["ai_detection"] = self._detect_ai(text)
         except Exception as e:
@@ -379,14 +374,12 @@ Scale the feedback to match the quality — a poor essay needs more corrections,
         return result
 
     def parse_response(self, raw: str, default: dict = None) -> dict:
-        """Extract JSON from model output. Returns default dict on any failure."""
         try:
             cleaned = re.sub(r"```(?:json)?\s*", "", raw)
             cleaned = re.sub(r"```\s*", "", cleaned).strip()
             start = cleaned.find("{")
             if start == -1:
                 raise ValueError("No { found")
-            # Brace-balanced walk
             depth = 0; end = -1; in_str = False; escape = False
             for i, ch in enumerate(cleaned[start:], start):
                 if escape: escape = False; continue
@@ -398,21 +391,17 @@ Scale the feedback to match the quality — a poor essay needs more corrections,
                     depth -= 1
                     if depth == 0: end = i + 1; break
             if end == -1:
-                # Truncated: try to close it
                 candidate = cleaned[start:]
                 opens = candidate.count("{"); closes = candidate.count("}")
                 candidate = candidate.rstrip(", \n\r\t")
                 candidate += "}" * (opens - closes)
             else:
                 candidate = cleaned[start:end]
-            # Try direct parse
             try: return json.loads(candidate)
             except json.JSONDecodeError: pass
-            # Remove trailing commas
             fixed = re.sub(r",\s*([}\]])", r"\1", candidate)
             try: return json.loads(fixed)
             except json.JSONDecodeError: pass
-            # Last resort: extract with regex
             raise ValueError("Could not parse")
         except Exception as e:
             if default is not None:
@@ -421,7 +410,7 @@ Scale the feedback to match the quality — a poor essay needs more corrections,
 
     def _detect_ai(self, text: str) -> dict:
         """
-        AI Detection using ZeroGPT unofficial API — no key or account needed.
+        AI Detection using ZeroGPT unofficial API — no key needed.
         Falls back to local rule engine if ZeroGPT is unreachable.
         """
         safe_default = {
@@ -432,7 +421,6 @@ Scale the feedback to match the quality — a poor essay needs more corrections,
         }
 
         try:
-            # ZeroGPT unofficial endpoint
             headers = {
                 "Content-Type": "application/json",
                 "origin": "https://www.zerogpt.com",
@@ -440,44 +428,28 @@ Scale the feedback to match the quality — a poor essay needs more corrections,
                 "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
             }
             payload = {"input_text": text[:5000]}
-
             r = requests.post(
                 "https://api.zerogpt.com/api/detect/detectText",
-                json=payload,
-                headers=headers,
-                timeout=20
+                json=payload, headers=headers, timeout=20
             )
             r.raise_for_status()
             data = r.json()
-
-            # ZeroGPT response fields
-            # data["data"]["isHuman"]      → 0.0 to 1.0 (1.0 = fully human)
-            # data["data"]["aiPercentage"] → 0 to 100 (AI probability)
-            # data["data"]["sentences"]    → list of flagged sentences
-
             inner = data.get("data", data)
 
-            # Get AI percentage
             ai_pct = inner.get("aiPercentage", None)
             if ai_pct is None:
                 is_human = inner.get("isHuman", 0.5)
                 ai_pct   = round((1 - float(is_human)) * 100)
             else:
                 ai_pct = round(float(ai_pct))
-
             ai_pct = max(0, min(100, ai_pct))
 
-            # Get flagged sentences
             flagged = inner.get("sentences", []) or inner.get("highlighted", []) or []
             if isinstance(flagged, list):
                 indicators = []
                 for s in flagged[:4]:
-                    if isinstance(s, dict):
-                        txt = s.get("text", s.get("sentence", ""))
-                    else:
-                        txt = str(s)
-                    if txt:
-                        indicators.append(f'"{txt[:90].strip()}..."')
+                    txt = s.get("text", s.get("sentence", "")) if isinstance(s, dict) else str(s)
+                    if txt: indicators.append(f'"{txt[:90].strip()}..."')
             else:
                 indicators = []
 
@@ -490,14 +462,10 @@ Scale the feedback to match the quality — a poor essay needs more corrections,
                 else:
                     indicators = ["No strong AI indicators found"]
 
-            # Human signals
             human_sigs = []
-            if ai_pct < 50:
-                human_sigs = ["Natural sentence variation", "Authentic writing voice"]
-            elif ai_pct < 70:
-                human_sigs = ["Some natural phrasing detected"]
+            if ai_pct < 50:   human_sigs = ["Natural sentence variation", "Authentic writing voice"]
+            elif ai_pct < 70: human_sigs = ["Some natural phrasing detected"]
 
-            # Verdict
             if ai_pct >= 80:   verdict = "AI Generated"
             elif ai_pct >= 62: verdict = "Likely AI"
             elif ai_pct >= 42: verdict = "Uncertain"
@@ -505,15 +473,12 @@ Scale the feedback to match the quality — a poor essay needs more corrections,
             else:              verdict = "Human"
 
             confidence = min(95, 50 + abs(ai_pct - 50))
-
             return {
-                "verdict":        verdict,
-                "confidence":     round(confidence),
-                "probability_ai": ai_pct,
-                "indicators":     indicators,
-                "human_signals":  human_sigs,
-                "explanation":    f"ZeroGPT analysed the essay and estimated {ai_pct}% probability of AI generation.",
-                "_source":        "ZeroGPT"
+                "verdict": verdict, "confidence": round(confidence),
+                "probability_ai": ai_pct, "indicators": indicators,
+                "human_signals": human_sigs,
+                "explanation": f"ZeroGPT analysed the essay and estimated {ai_pct}% probability of AI generation.",
+                "_source": "ZeroGPT"
             }
 
         except requests.exceptions.Timeout:
@@ -527,7 +492,6 @@ Scale the feedback to match the quality — a poor essay needs more corrections,
             return self._rule_engine_detect(text)
 
     def _rule_engine_detect(self, text: str) -> dict:
-        """Fallback rule-based detection when ZeroGPT is unreachable."""
         try:
             rule = self._rule_based_ai_score(text)
             prob = rule["score"]
@@ -537,8 +501,7 @@ Scale the feedback to match the quality — a poor essay needs more corrections,
             elif prob >= 22: verdict = "Likely Human"
             else:            verdict = "Human"
             return {
-                "verdict": verdict,
-                "confidence": min(90, 50 + abs(prob - 50)),
+                "verdict": verdict, "confidence": min(90, 50 + abs(prob - 50)),
                 "probability_ai": prob,
                 "indicators": rule["indicators"] or ["No strong AI indicators found"],
                 "human_signals": ["Natural writing style"] if prob < 50 else [],
@@ -552,24 +515,81 @@ Scale the feedback to match the quality — a poor essay needs more corrections,
                 "explanation": "Detection could not complete.", "_source": "None"
             }
 
+    def _rule_based_ai_score(self, text: str) -> dict:
+        sentences = re.split(r'[.!?]+', text)
+        sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
+        score = 0; indicators = []
 
-    def _call_ollama(self, prompt: str) -> str:
+        # Check sentence length uniformity
+        if sentences:
+            lengths = [len(s.split()) for s in sentences]
+            avg = sum(lengths) / len(lengths)
+            variance = sum((l - avg) ** 2 for l in lengths) / len(lengths)
+            if variance < 15:
+                score += 25
+                indicators.append("Very uniform sentence lengths (low variance)")
+
+        # Check for AI filler phrases
+        ai_phrases = [
+            "it is important to note", "it is worth noting", "in conclusion",
+            "furthermore", "moreover", "in summary", "to summarize",
+            "this essay will", "the purpose of this essay", "as previously mentioned",
+            "in today's society", "plays a crucial role", "it goes without saying"
+        ]
+        text_lower = text.lower()
+        found = [p for p in ai_phrases if p in text_lower]
+        if len(found) >= 3:
+            score += 30
+            indicators.append(f"Multiple AI filler phrases detected: {', '.join(found[:3])}")
+        elif len(found) >= 1:
+            score += 10
+
+        # Check transition word density
+        transitions = ["firstly", "secondly", "thirdly", "additionally", "consequently",
+                       "therefore", "thus", "hence", "subsequently", "nevertheless"]
+        trans_count = sum(1 for t in transitions if t in text_lower)
+        if trans_count >= 4:
+            score += 20
+            indicators.append(f"High transition word density ({trans_count} found)")
+
+        # Check for exclamation marks / personal anecdotes (human signals)
+        if text.count("!") > 2 or "I remember" in text or "I felt" in text:
+            score = max(0, score - 15)
+
+        return {"score": min(95, score), "indicators": indicators}
+
+    def _call_groq(self, prompt: str) -> str:
+        """Call Groq API using OpenAI-compatible chat completions endpoint."""
+        if not GROQ_API_KEY:
+            raise ConnectionError("GROQ_API_KEY environment variable is not set.")
+
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
         payload = {
-            "model": self._model, "prompt": prompt, "stream": False,
-            "options": {
-                "temperature": 0.1,   # slight randomness so not robotic, but mostly deterministic
-                "num_predict": 2500,
-                "seed": 42
-            }
+            "model": self._model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1,
+            "max_tokens": 2500,
+            "seed": 42
         }
         try:
-            r = requests.post(f"{self._base_url}/api/generate", json=payload, timeout=180)
+            r = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=60)
             r.raise_for_status()
-            return r.json().get("response", "")
+            return r.json()["choices"][0]["message"]["content"]
         except requests.exceptions.ConnectionError:
-            raise ConnectionError(f"Cannot connect to Ollama at {self._base_url}. Run: ollama serve")
+            raise ConnectionError("Cannot connect to Groq API. Check your internet connection.")
         except requests.exceptions.Timeout:
-            raise TimeoutError("Ollama timed out. Try a smaller model.")
+            raise TimeoutError("Groq API timed out. Please try again.")
+        except requests.exceptions.HTTPError as e:
+            status = e.response.status_code if e.response else 0
+            if status == 401:
+                raise ConnectionError("Invalid GROQ_API_KEY. Check your API key.")
+            elif status == 429:
+                raise ConnectionError("Groq rate limit hit. Please wait a moment and try again.")
+            else:
+                raise ConnectionError(f"Groq API error {status}: {e}")
 
 # ── Singletons ────────────────────────────────────────────────
 history_manager = ChatHistoryManager(HISTORY_FILE)
@@ -583,12 +603,9 @@ def index(): return render_template("index.html")
 
 @app.route("/api/status")
 def status():
-    try:
-        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
-        models = [m["name"] for m in r.json().get("models", [])]
-        return jsonify({"status": "connected", "models": models, "current_model": OLLAMA_MODEL})
-    except Exception as e:
-        return jsonify({"status": "disconnected", "error": str(e)}), 200
+    if not GROQ_API_KEY:
+        return jsonify({"status": "disconnected", "error": "GROQ_API_KEY not set", "models": [], "current_model": GROQ_MODEL})
+    return jsonify({"status": "connected", "models": GROQ_MODELS, "current_model": evaluator._model})
 
 @app.route("/api/model", methods=["POST"])
 def set_model():
@@ -652,12 +669,10 @@ def evaluate_essay():
         if cached:
             logger.info(f"Cache HIT {cache_key[:12]} — returning stored result")
             result = cached
-            # If old cached result is missing ai_detection, run it now and update cache
             if "ai_detection" not in result or not result.get("ai_detection"):
-                logger.info("Cache result missing ai_detection — running detection now")
                 try:
                     result["ai_detection"] = evaluator._detect_ai(essay_text)
-                    score_cache.set(cache_key, result)  # update cache with detection
+                    score_cache.set(cache_key, result)
                 except Exception as e:
                     result["ai_detection"] = {
                         "verdict": "Unknown", "confidence": 0, "probability_ai": 50,
@@ -665,7 +680,7 @@ def evaluate_essay():
                         "explanation": str(e)
                     }
         else:
-            logger.info(f"Cache MISS {cache_key[:12]} — calling Ollama")
+            logger.info(f"Cache MISS {cache_key[:12]} — calling Groq")
             try:
                 result = evaluator.evaluate(essay_text, rubric)
             except (ConnectionError, TimeoutError) as e:
@@ -710,7 +725,7 @@ def chat():
         )
         prompt = f"You are EssayMind, an expert writing tutor. Be specific and helpful.\n\nConversation:\n{ctx}\nUser: {message}\nAssistant:"
         try:
-            raw = evaluator._call_ollama(prompt)
+            raw = evaluator._call_groq(prompt)
         except (ConnectionError, TimeoutError) as e:
             return jsonify({"error": str(e)}), 503
         history_manager.add_message(sid, "assistant", raw)
@@ -726,19 +741,8 @@ def cache_stats(): return jsonify({"cached_essays": score_cache.size()})
 def clear_cache(): score_cache.clear(); return jsonify({"ok": True})
 
 if __name__ == "__main__":
-    import socket
-    # Get local IP so you can connect from phone on same WiFi
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        local_ip = s.getsockname()[0]
-        s.close()
-    except Exception:
-        local_ip = "localhost"
-
+    port = int(os.environ.get("PORT", 5000))
     print("\n  ◈ EssayMind is running!")
-    print(f"  Local:   http://localhost:5000")
-    print(f"  Network: http://{local_ip}:5000  ← open this on your phone")
-    print("\n  Make sure Ollama is running: ollama serve\n")
-    # host="0.0.0.0" = listen on all interfaces so phone can reach it
-    app.run(debug=True, port=5000, host="0.0.0.0")
+    print(f"  Local: http://localhost:{port}")
+    print(f"\n  Make sure GROQ_API_KEY is set in your environment.\n")
+    app.run(debug=False, port=port, host="0.0.0.0")
