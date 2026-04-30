@@ -8,7 +8,7 @@ import os, json, uuid, re, hashlib, logging
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, make_response
 from flask_cors import CORS
 import requests
 
@@ -37,6 +37,19 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
+# ── User isolation via cookie ─────────────────────────────────
+def get_user_id():
+    """Return a stable anonymous user-id from a browser cookie."""
+    uid = request.cookies.get("essaymind_uid")
+    if not uid:
+        uid = str(uuid.uuid4())
+    return uid
+
+def set_uid_cookie(response, uid):
+    """Attach the uid cookie to a response (1-year expiry)."""
+    response.set_cookie("essaymind_uid", uid, max_age=365*24*3600, samesite="Lax")
+    return response
+
 UPLOAD_FOLDER = Path("uploads")
 DATA_FOLDER   = Path("data")
 
@@ -49,10 +62,6 @@ GROQ_API_URL   = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODELS = [
     "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
-    "llama3-70b-8192",
-    "llama3-8b-8192",
-    "mixtral-8x7b-32768",
-    "gemma2-9b-it",
 ]
 
 ALLOWED_EXT = {".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -189,13 +198,16 @@ class ChatHistoryManager:
         return {}
     def _save(self):
         with open(self._path, "w") as f: json.dump(self._sessions, f, indent=2)
-    def create_session(self, title="New Evaluation"):
+    def create_session(self, title="New Evaluation", uid=None):
         sid = str(uuid.uuid4())
-        s = {"id":sid,"title":title,"created":datetime.now().isoformat(),"updated":datetime.now().isoformat(),"messages":[]}
+        s = {"id":sid,"title":title,"uid":uid,"created":datetime.now().isoformat(),"updated":datetime.now().isoformat(),"messages":[]}
         self._sessions[sid] = s; self._save(); return s
     def get_session(self, sid): return self._sessions.get(sid)
-    def get_all_sessions(self):
-        s = sorted(self._sessions.values(), key=lambda x: x.get("updated",""), reverse=True)
+    def get_all_sessions(self, uid=None):
+        sessions = self._sessions.values()
+        if uid:
+            sessions = [s for s in sessions if s.get("uid") == uid]
+        s = sorted(sessions, key=lambda x: x.get("updated",""), reverse=True)
         return [{"id":x["id"],"title":x["title"],"created":x["created"],"updated":x["updated"],"message_count":len(x.get("messages",[]))} for x in s]
     def add_message(self, sid, role, content, evaluation=None, metadata=None):
         s = self._sessions.get(sid)
@@ -321,8 +333,21 @@ IMPORTANT QUANTITY RULES based on the essay quality:
 Scale the feedback to match the quality — a poor essay needs more corrections, a great essay deserves more praise."""
 
     def evaluate(self, text: str, rubric: Rubric) -> dict:
-        raw    = self._call_groq(self.build_prompt(text, rubric))
-        result = self.parse_response(raw)
+        raw = self._call_groq(self.build_prompt(text, rubric))
+        try:
+            result = self.parse_response(raw)
+        except ValueError:
+            # First attempt failed — retry with a stricter prompt asking only for JSON
+            retry_prompt = (
+                "You previously returned an incomplete or unparseable JSON response. "
+                "Return ONLY a valid JSON object with these keys: "
+                "overall_score (int), grade (str), summary (str), scores (object), "
+                "errors (array), recommendations (array), strengths (array). "
+                "No markdown, no explanation, no text outside the JSON braces.\n\n"
+                "Original task:\n" + self.build_prompt(text, rubric)
+            )
+            raw2 = self._call_groq(retry_prompt)
+            result = self.parse_response(raw2)
         result["word_count"]  = len(text.split())
         result["char_count"]  = len(text)
         result["rubric_used"] = [c["label"] for c in rubric.criteria]
@@ -571,7 +596,7 @@ Scale the feedback to match the quality — a poor essay needs more corrections,
             "model": self._model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.1,
-            "max_tokens": 2500,
+            "max_tokens": 4000,
             "seed": 42
         }
         try:
@@ -614,10 +639,16 @@ def set_model():
     evaluator._model = m; return jsonify({"model": m})
 
 @app.route("/api/sessions")
-def get_sessions(): return jsonify(history_manager.get_all_sessions())
+def get_sessions():
+    uid = get_user_id()
+    resp = make_response(jsonify(history_manager.get_all_sessions(uid=uid)))
+    return set_uid_cookie(resp, uid)
 
 @app.route("/api/sessions", methods=["POST"])
-def create_session(): return jsonify(history_manager.create_session())
+def create_session():
+    uid = get_user_id()
+    resp = make_response(jsonify(history_manager.create_session(uid=uid)))
+    return set_uid_cookie(resp, uid)
 
 @app.route("/api/sessions/<sid>")
 def get_session(sid):
@@ -689,12 +720,13 @@ def evaluate_essay():
                 return jsonify({"error": str(e)}), 422
             score_cache.set(cache_key, result)
 
+        uid = get_user_id()
         if not sid:
-            session = history_manager.create_session(); sid = session["id"]
+            session = history_manager.create_session(uid=uid); sid = session["id"]
         else:
             session = history_manager.get_session(sid)
             if not session:
-                session = history_manager.create_session(); sid = session["id"]
+                session = history_manager.create_session(uid=uid); sid = session["id"]
 
         display = (
             f"[File: {source_meta.get('filename', 'uploaded')}]\n\n{essay_text[:300]}..."
@@ -703,7 +735,8 @@ def evaluate_essay():
         history_manager.add_message(sid, "user", display, metadata=source_meta)
         history_manager.add_message(sid, "assistant", result.get("summary", "Evaluation complete."), evaluation=result)
 
-        return jsonify({"session_id": sid, "evaluation": result, "from_cache": bool(cached)})
+        resp = make_response(jsonify({"session_id": sid, "evaluation": result, "from_cache": bool(cached)}))
+        return set_uid_cookie(resp, uid)
 
     except Exception as e:
         logger.exception("Evaluate error")
