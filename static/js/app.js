@@ -797,14 +797,16 @@ class App {
     document.getElementById("chatInput").focus();
   }
   async #loadSession(id) {
-    // Don't cancel the in-flight evaluation — just let it finish in the background.
-    // It will save to its own session on the server.
-    // Just switch the visible UI to show the selected session.
     this.#currentSessionId = id;
     this.#history.setActive(id);
     this.#closeMobileSidebar();
 
-    // Clear the chat area and show the selected session's messages
+    // If an evaluation is running in the background, detach its loading indicator
+    // so it does not bleed into the session we are switching to.
+    if (this.#isEvaluating) {
+      this.#renderer.removeLoading();
+    }
+
     this.#renderer.render();
     document.getElementById("welcomeScreen").classList.add("hidden");
     document.getElementById("topbarTitle").textContent = "Loading...";
@@ -813,9 +815,9 @@ class App {
       const s = await this.#api.getSession(id);
       if (!s || s.error) {
         document.getElementById("welcomeScreen").classList.remove("hidden");
+        document.getElementById("topbarTitle").textContent = "Evaluation";
         return;
       }
-      // Only update UI if the user hasn't switched away again while we were loading
       if (this.#currentSessionId !== id) return;
       document.getElementById("topbarTitle").textContent = s.title || "Evaluation";
       const msgs = s.messages || [];
@@ -842,9 +844,13 @@ class App {
     if (this.#isEvaluating) return;
     const text=document.getElementById("chatInput").value.trim();
     if (!text&&!this.#pendingFile) return;
-    const isFirst=!this.#currentSessionId||
+    // Always evaluate when a file is attached OR when the input looks like an essay
+    // (more than 60 words). Short messages in an existing session go to chat.
+    const wordCount = text.split(/\s+/).filter(Boolean).length;
+    const isFirst = !this.#currentSessionId||
       (await this.#api.getSession(this.#currentSessionId))?.messages?.length===0;
-    if (this.#pendingFile||isFirst) await this.#runEvaluation(text);
+    const shouldEvaluate = this.#pendingFile || isFirst || wordCount > 60;
+    if (shouldEvaluate) await this.#runEvaluation(text);
     else await this.#runChat(text);
   }
 
