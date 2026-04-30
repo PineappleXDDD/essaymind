@@ -34,7 +34,28 @@ class ApiClient {
     })).json();
   }
   async evaluate(formData, signal) {
-    return (await fetch(`${this.#base}/api/evaluate`, { method:"POST", body:formData, signal })).json();
+    const MAX_RETRIES = 2;
+    let lastErr;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const res = await fetch(`${this.#base}/api/evaluate`, { method:"POST", body:formData, signal });
+        if (!res.ok) {
+          const text = await res.text();
+          // Don't retry client errors (4xx) except 429
+          if (res.status !== 429 && res.status < 500) {
+            return { error: `Server error ${res.status}. Please try again.` };
+          }
+          lastErr = new Error(`HTTP ${res.status}`);
+          if (attempt < MAX_RETRIES) { await sleep(2000 * (attempt + 1)); continue; }
+        }
+        return res.json();
+      } catch(e) {
+        if (e.name === "AbortError") throw e; // don't retry user aborts
+        lastErr = e;
+        if (attempt < MAX_RETRIES) { await sleep(2000 * (attempt + 1)); continue; }
+      }
+    }
+    throw lastErr;
   }
   async #get(path) { return (await fetch(`${this.#base}${path}`)).json(); }
   async #post(path, body) {
@@ -658,6 +679,7 @@ class App {
   #currentSessionId    = null;
   #pendingFile         = null;
   #isEvaluating        = false;
+  #userAborted         = false;
   #renamingSessionId   = null;
   #abortController     = null;
   #evalToken           = 0;
@@ -794,9 +816,15 @@ class App {
 
   // ── Session management ──────────────────────────────────────
   async #newSession() {
-    // Don't cancel the in-flight eval — it keeps running in the background
-    // and saves its result to the server for the session it started on.
-    // Just create a new session and switch the UI.
+    if (this.#isEvaluating) {
+      const ok = confirm("The AI is still evaluating your essay.\n\nCancel the evaluation and open a new session?");
+      if (!ok) return;
+      this.#userAborted = true;
+      this.#abortController?.abort();
+      this.#isEvaluating = false;
+      this.#renderer.removeLoading();
+      document.getElementById("sendBtn").disabled = false;
+    }
     const session = await this.#api.createSession();
     this.#currentSessionId = session.id;
 
@@ -813,6 +841,19 @@ class App {
     document.getElementById("chatInput").focus();
   }
   async #loadSession(id) {
+    if (id === this.#currentSessionId) return;
+    if (this.#isEvaluating) {
+      const ok = confirm("The AI is still evaluating your essay.\n\nCancel the evaluation and switch session?");
+      if (!ok) {
+        this.#history.setActive(this.#currentSessionId); // revert sidebar highlight
+        return;
+      }
+      this.#userAborted = true;
+      this.#abortController?.abort();
+      this.#isEvaluating = false;
+      this.#renderer.removeLoading();
+      document.getElementById("sendBtn").disabled = false;
+    }
     this.#currentSessionId = id;
     this.#history.setActive(id);
     this.#closeMobileSidebar();
@@ -872,6 +913,7 @@ class App {
     if (!text && !file) return;
 
     this.#isEvaluating = true;
+    this.#userAborted  = false;
     this.#abortController = new AbortController();
     const signal      = this.#abortController.signal;
     const mySessionId = this.#currentSessionId;
@@ -949,10 +991,11 @@ class App {
 
     } catch(err) {
       clearTimeout(retryTimer); clearTimeout(retryHint);
-      if (err.name === "AbortError") return;
+      // AbortError is thrown when user confirmed cancellation — not a real error
+      if (err.name === "AbortError" || this.#userAborted) return;
       if (this.#renderer.isOwnedBy(mySessionId)) {
         this.#renderer.removeLoading();
-        this.#renderer.appendError("Network error. Please try again.");
+        this.#renderer.appendError("Could not reach the server. If this is the first request in a while, the server may be waking up — please wait 20 seconds and try again.");
       }
     } finally {
       this.#isEvaluating = false;
