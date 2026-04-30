@@ -1,0 +1,744 @@
+"""
+EssayMind — AI Essay Evaluator (Flask Backend)
+OOP: Abstraction, Encapsulation, Inheritance, Polymorphism
+Deterministic scoring: SHA-256 hash of essay content + rubric config
+"""
+import os, json, uuid, re, hashlib, logging
+from abc import ABC, abstractmethod
+from datetime import datetime
+from pathlib import Path
+from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS
+import requests
+
+try:
+    import pytesseract
+    from PIL import Image
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
+
+try:
+    import fitz
+    PDF_AVAILABLE = True
+except ImportError:
+    PDF_AVAILABLE = False
+
+try:
+    from docx import Document as DocxDocument
+    DOCX_AVAILABLE = True
+except ImportError:
+    DOCX_AVAILABLE = False
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+CORS(app)
+
+UPLOAD_FOLDER = Path("uploads")
+DATA_FOLDER   = Path("data")
+OLLAMA_URL    = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_MODEL  = os.environ.get("OLLAMA_MODEL", "llama3.2")
+ALLOWED_EXT   = {".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+
+UPLOAD_FOLDER.mkdir(exist_ok=True)
+DATA_FOLDER.mkdir(exist_ok=True)
+
+HISTORY_FILE = DATA_FOLDER / "chat_history.json"
+CACHE_FILE   = DATA_FOLDER / "score_cache.json"
+
+# ── ABSTRACTION ───────────────────────────────────────────────
+class BaseEvaluator(ABC):
+    @abstractmethod
+    def evaluate(self, text: str, rubric) -> dict: pass
+    @abstractmethod
+    def build_prompt(self, text: str, rubric) -> str: pass
+    @abstractmethod
+    def parse_response(self, raw: str) -> dict: pass
+
+class FileProcessor(ABC):
+    @abstractmethod
+    def can_process(self, ext: str) -> bool: pass
+    @abstractmethod
+    def extract_text(self, filepath: Path) -> str: pass
+    def _clean(self, t: str) -> str: return re.sub(r'\s+', ' ', t).strip()
+
+# ── POLYMORPHISM: File processors ────────────────────────────
+class TextFileProcessor(FileProcessor):
+    def can_process(self, ext): return ext == ".txt"
+    def extract_text(self, fp):
+        with open(fp, "r", encoding="utf-8", errors="replace") as f:
+            return self._clean(f.read())
+
+class PDFProcessor(FileProcessor):
+    def can_process(self, ext): return ext == ".pdf"
+    def extract_text(self, fp):
+        if not PDF_AVAILABLE: raise ValueError("PyMuPDF not installed. pip install pymupdf")
+        doc = fitz.open(str(fp))
+        pages = [p.get_text() for p in doc]; doc.close()
+        text = "\n".join(pages)
+        return self._ocr_pdf(fp) if len(text.strip()) < 50 else self._clean(text)
+    def _ocr_pdf(self, fp):
+        if not OCR_AVAILABLE: raise ValueError("Tesseract not available for scanned PDFs.")
+        doc = fitz.open(str(fp)); texts = []
+        for page in doc:
+            pix = page.get_pixmap(dpi=200)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            texts.append(pytesseract.image_to_string(img))
+        doc.close(); return self._clean("\n".join(texts))
+
+class DocxProcessor(FileProcessor):
+    def can_process(self, ext): return ext == ".docx"
+    def extract_text(self, fp):
+        if not DOCX_AVAILABLE: raise ValueError("python-docx not installed.")
+        doc = DocxDocument(str(fp))
+        return self._clean("\n".join(p.text for p in doc.paragraphs if p.text.strip()))
+
+class ImageProcessor(FileProcessor):
+    _OK = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+    def can_process(self, ext): return ext.lower() in self._OK
+    def extract_text(self, fp):
+        if not OCR_AVAILABLE: raise ValueError("Tesseract OCR not available.")
+        img = Image.open(str(fp)).convert("L")
+        text = pytesseract.image_to_string(img, config="--psm 3")
+        if not text.strip(): raise ValueError("No text detected in image.")
+        return self._clean(text)
+
+# ── ENCAPSULATION: Registry, Rubric, Cache, History ──────────
+class FileProcessorRegistry:
+    def __init__(self):
+        self._p = [TextFileProcessor(), PDFProcessor(), DocxProcessor(), ImageProcessor()]
+    def extract_text(self, fp: Path) -> str:
+        ext = fp.suffix.lower()
+        for p in self._p:
+            if p.can_process(ext): return p.extract_text(fp)
+        raise ValueError(f"Unsupported file type: {ext}")
+
+class Rubric:
+    DEFAULT_CRITERIA = [
+        {"id":"focus",       "label":"Focus",       "weight":20, "description":"Clarity and strength of the central argument or thesis"},
+        {"id":"structure",   "label":"Structure",   "weight":20, "description":"Logical flow, introduction, body, and conclusion"},
+        {"id":"credibility", "label":"Credibility", "weight":20, "description":"Use of evidence, citations, and supporting details"},
+        {"id":"style",       "label":"Style",       "weight":20, "description":"Word choice, tone, voice, and overall expression"},
+        {"id":"clarity",     "label":"Clarity",     "weight":20, "description":"Grammar, spelling, punctuation, and readability"},
+    ]
+    def __init__(self, criteria=None):
+        self._criteria = criteria or [dict(c) for c in self.DEFAULT_CRITERIA]
+    @property
+    def criteria(self): return self._criteria
+    def to_prompt_text(self):
+        return "\n".join(f"- {c['label']} ({c['weight']}%): {c['description']}" for c in self._criteria)
+    def cache_key(self):
+        return json.dumps([{"id":c["id"],"weight":c["weight"]} for c in self._criteria], sort_keys=True)
+    def strictness_level(self) -> str:
+        """
+        Determine strictness based on how unevenly weights are distributed.
+        If any single criterion has high weight (>25) that criterion is graded harshly.
+        Overall: we judge by the MAX weight — a 40% weighted criterion means very strict on that aspect.
+        """
+        weights = [c["weight"] for c in self._criteria]
+        max_w = max(weights) if weights else 20
+        if max_w >= 30:   return "strict"
+        if max_w >= 22:   return "moderately_strict"
+        return "standard"
+    @classmethod
+    def from_dict(cls, data):
+        return cls(data.get("criteria", cls.DEFAULT_CRITERIA))
+
+class ScoreCache:
+    def __init__(self, fp: Path):
+        self._path = fp; self._cache = self._load()
+    def _load(self):
+        if self._path.exists():
+            try:
+                with open(self._path) as f: return json.load(f)
+            except: pass
+        return {}
+    def _save(self):
+        with open(self._path, "w") as f: json.dump(self._cache, f, indent=2)
+    def make_key(self, text: str, rubric: Rubric) -> str:
+        normalised = re.sub(r'\s+', ' ', text.strip()).lower()
+        raw = normalised + "||RUBRIC||" + rubric.cache_key()
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    def get(self, key): return self._cache.get(key)
+    def set(self, key, result):
+        result["_cached"] = True
+        self._cache[key] = result; self._save()
+    def clear(self): self._cache = {}; self._save()
+    def size(self): return len(self._cache)
+
+class ChatHistoryManager:
+    def __init__(self, fp: Path):
+        self._path = fp; self._sessions = self._load()
+    def _load(self):
+        if self._path.exists():
+            try:
+                with open(self._path) as f: return json.load(f)
+            except: pass
+        return {}
+    def _save(self):
+        with open(self._path, "w") as f: json.dump(self._sessions, f, indent=2)
+    def create_session(self, title="New Evaluation"):
+        sid = str(uuid.uuid4())
+        s = {"id":sid,"title":title,"created":datetime.now().isoformat(),"updated":datetime.now().isoformat(),"messages":[]}
+        self._sessions[sid] = s; self._save(); return s
+    def get_session(self, sid): return self._sessions.get(sid)
+    def get_all_sessions(self):
+        s = sorted(self._sessions.values(), key=lambda x: x.get("updated",""), reverse=True)
+        return [{"id":x["id"],"title":x["title"],"created":x["created"],"updated":x["updated"],"message_count":len(x.get("messages",[]))} for x in s]
+    def add_message(self, sid, role, content, evaluation=None, metadata=None):
+        s = self._sessions.get(sid)
+        if not s: s = self.create_session(); sid = s["id"]
+        msg = {"id":str(uuid.uuid4()),"role":role,"content":content,"timestamp":datetime.now().isoformat(),"evaluation":evaluation,"metadata":metadata or {}}
+        s["messages"].append(msg); s["updated"] = datetime.now().isoformat()
+        if role == "user" and len(s["messages"]) == 1:
+            s["title"] = content[:50].strip() + ("..." if len(content)>50 else "")
+        self._save(); return msg
+    def delete_session(self, sid):
+        if sid in self._sessions: del self._sessions[sid]; self._save(); return True
+        return False
+    def update_title(self, sid, title):
+        if sid in self._sessions: self._sessions[sid]["title"] = title; self._save()
+
+# ── INHERITANCE: EssayEvaluator ───────────────────────────────
+class EssayEvaluator(BaseEvaluator):
+    def __init__(self, model=OLLAMA_MODEL, base_url=OLLAMA_URL):
+        self._model = model; self._base_url = base_url
+
+    def build_prompt(self, text: str, rubric: Rubric) -> str:
+        """
+        Build a prompt that produces VALID JSON with no placeholder text.
+        Key fix: use concrete numeric examples (not <integer> placeholders)
+        and make rubric strictness affect scoring through explicit score ranges.
+        """
+        strictness = rubric.strictness_level()
+        # Per-criterion score expectations based on strictness
+        score_ranges = {
+            "strict":            {"excellent":88, "good":72, "average":55, "poor":38},
+            "moderately_strict": {"excellent":90, "good":78, "average":62, "poor":45},
+            "standard":          {"excellent":92, "good":82, "average":68, "poor":50},
+        }[strictness]
+
+        criteria_lines = []
+        for c in rubric.criteria:
+            w = c["weight"]
+            if w >= 30:
+                note = f"HIGH WEIGHT ({w}%) — be strict; small flaws cause significant score drops"
+            elif w >= 25:
+                note = f"ELEVATED WEIGHT ({w}%) — apply firm standards"
+            else:
+                note = f"Standard weight ({w}%)"
+            criteria_lines.append(f"  - {c['label']} [{note}]: {c['description']}")
+
+        criteria_text = "\n".join(criteria_lines)
+        ids = [c["id"] for c in rubric.criteria]
+
+        # Build a CONCRETE example score block (no angle-bracket placeholders)
+        # so the AI returns valid JSON and understands the structure
+        example_scores = []
+        for c in rubric.criteria:
+            example_scores.append(f'    "{c["id"]}": {{"score": 75, "feedback": "Replace this with specific feedback about this criterion."}}')
+        example_scores_str = ",\n".join(example_scores)
+
+        strictness_instruction = {
+            "strict": (
+                "STRICT MODE — weights are high. Score harshly:\n"
+                f"- Excellent writing = {score_ranges['excellent']}\n"
+                f"- Good writing = {score_ranges['good']}\n"
+                f"- Average writing = {score_ranges['average']}\n"
+                f"- Poor/weak writing = {score_ranges['poor']} or below\n"
+                "- Deduct heavily for ANY weakness in high-weight criteria."
+            ),
+            "moderately_strict": (
+                "MODERATELY STRICT MODE:\n"
+                f"- Excellent = {score_ranges['excellent']}, Good = {score_ranges['good']}, "
+                f"Average = {score_ranges['average']}, Poor = {score_ranges['poor']}\n"
+                "- Be firm on high-weight criteria."
+            ),
+            "standard": (
+                "STANDARD MODE — be fair and balanced:\n"
+                f"- Excellent = {score_ranges['excellent']}, Good = {score_ranges['good']}, "
+                f"Average = {score_ranges['average']}, Poor = {score_ranges['poor']}\n"
+                "- Recognise effort and strengths."
+            ),
+        }[strictness]
+
+        return f"""You are an expert academic essay evaluator. Read the essay below and evaluate it honestly.
+
+SCORING MODE:
+{strictness_instruction}
+
+IMPORTANT RULES:
+- Each criterion gets its OWN independent score — never give all criteria the same score.
+- An error-filled or incoherent essay MUST score below 50.
+- overall_score = weighted average of all criterion scores.
+- Write SPECIFIC feedback quoting actual phrases from the essay — not generic comments.
+- For weaknesses: quote the EXACT problematic text found in the essay.
+
+RUBRIC CRITERIA:
+{criteria_text}
+
+ESSAY:
+---
+{text[:5000]}
+---
+
+Respond with ONLY this JSON (no markdown, no explanation, no text before or after):
+
+{{
+  "overall_score": 75,
+  "grade": "B",
+  "summary": "Write 2-3 specific sentences summarising this particular essay here.",
+  "scores": {{
+{example_scores_str}
+  }},
+  "errors": [
+    {{
+      "type": "Grammar",
+      "text": "paste exact phrase from essay here",
+      "issue": "describe what is wrong",
+      "suggestion": "show corrected version"
+    }}
+  ],
+  "recommendations": [
+    "Write specific, actionable suggestion 1 for THIS essay.",
+    "Write specific suggestion 2.",
+    "Write specific suggestion 3 (add more if score is low — low scores need more guidance)."
+  ],
+  "strengths": [
+    "Write genuine strength 1 of THIS essay.",
+    "Write genuine strength 2 (add more if score is high — high scores deserve more praise)."
+  ]
+}}
+
+IMPORTANT QUANTITY RULES based on the essay quality:
+- If overall_score < 50: provide 5-7 weaknesses (errors), 4-5 recommendations, 1-2 strengths
+- If overall_score 50-65: provide 3-5 weaknesses, 3-4 recommendations, 2-3 strengths  
+- If overall_score 65-80: provide 2-3 weaknesses, 2-3 recommendations, 3-4 strengths
+- If overall_score > 80: provide 1-2 weaknesses, 1-2 recommendations, 4-5 strengths
+Scale the feedback to match the quality — a poor essay needs more corrections, a great essay deserves more praise."""
+
+    def evaluate(self, text: str, rubric: Rubric) -> dict:
+        raw    = self._call_ollama(self.build_prompt(text, rubric))
+        result = self.parse_response(raw)
+        result["word_count"]  = len(text.split())
+        result["char_count"]  = len(text)
+        result["rubric_used"] = [c["label"] for c in rubric.criteria]
+
+        # ── Enforce honest scoring ──────────────────────────────────────────
+        # Recompute overall_score from criterion scores in Python.
+        # This prevents the model from returning 0s on all criteria but 75 overall.
+        scores_data = result.get("scores", {})
+        if scores_data and isinstance(scores_data, dict):
+            total_weight = 0
+            weighted_sum = 0
+            for criterion in rubric.criteria:
+                cid  = criterion["id"]
+                wgt  = criterion["weight"]
+                data = scores_data.get(cid, {})
+                if isinstance(data, dict):
+                    raw_score = data.get("score", data.get("value", 0))
+                else:
+                    raw_score = data
+                sc = max(0, min(100, int(float(raw_score or 0))))
+                # Write normalised score back
+                if isinstance(scores_data.get(cid), dict):
+                    scores_data[cid]["score"] = sc
+                weighted_sum += sc * wgt
+                total_weight += wgt
+
+            if total_weight > 0:
+                computed = round(weighted_sum / total_weight)
+                # Override model's overall_score with the real weighted average
+                result["overall_score"] = computed
+
+                # Derive grade from real score
+                if computed >= 93:   result["grade"] = "A+"
+                elif computed >= 90: result["grade"] = "A"
+                elif computed >= 87: result["grade"] = "A-"
+                elif computed >= 83: result["grade"] = "B+"
+                elif computed >= 80: result["grade"] = "B"
+                elif computed >= 77: result["grade"] = "B-"
+                elif computed >= 73: result["grade"] = "C+"
+                elif computed >= 70: result["grade"] = "C"
+                elif computed >= 67: result["grade"] = "C-"
+                elif computed >= 60: result["grade"] = "D"
+                else:                result["grade"] = "F"
+
+        # ── Run AI detection as a separate, independent call ────────────────
+        try:
+            result["ai_detection"] = self._detect_ai(text)
+        except Exception as e:
+            result["ai_detection"] = {
+                "verdict": "Unknown", "confidence": 0, "probability_ai": 50,
+                "indicators": [str(e)], "human_signals": [],
+                "explanation": "Detection failed."
+            }
+
+        return result
+
+    def parse_response(self, raw: str, default: dict = None) -> dict:
+        """Extract JSON from model output. Returns default dict on any failure."""
+        try:
+            cleaned = re.sub(r"```(?:json)?\s*", "", raw)
+            cleaned = re.sub(r"```\s*", "", cleaned).strip()
+            start = cleaned.find("{")
+            if start == -1:
+                raise ValueError("No { found")
+            # Brace-balanced walk
+            depth = 0; end = -1; in_str = False; escape = False
+            for i, ch in enumerate(cleaned[start:], start):
+                if escape: escape = False; continue
+                if ch == "\\": escape = True; continue
+                if ch == '"' and not escape: in_str = not in_str; continue
+                if in_str: continue
+                if ch == "{": depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0: end = i + 1; break
+            if end == -1:
+                # Truncated: try to close it
+                candidate = cleaned[start:]
+                opens = candidate.count("{"); closes = candidate.count("}")
+                candidate = candidate.rstrip(", \n\r\t")
+                candidate += "}" * (opens - closes)
+            else:
+                candidate = cleaned[start:end]
+            # Try direct parse
+            try: return json.loads(candidate)
+            except json.JSONDecodeError: pass
+            # Remove trailing commas
+            fixed = re.sub(r",\s*([}\]])", r"\1", candidate)
+            try: return json.loads(fixed)
+            except json.JSONDecodeError: pass
+            # Last resort: extract with regex
+            raise ValueError("Could not parse")
+        except Exception as e:
+            if default is not None:
+                return default
+            raise ValueError(f"JSON parse failed: {e}. Raw: {raw[:300]}")
+
+    def _detect_ai(self, text: str) -> dict:
+        """
+        AI Detection using ZeroGPT unofficial API — no key or account needed.
+        Falls back to local rule engine if ZeroGPT is unreachable.
+        """
+        safe_default = {
+            "verdict": "Unknown", "confidence": 0, "probability_ai": 50,
+            "indicators": ["Detection unavailable — check your internet connection"],
+            "human_signals": [],
+            "explanation": "Could not reach ZeroGPT. Check internet connection."
+        }
+
+        try:
+            # ZeroGPT unofficial endpoint
+            headers = {
+                "Content-Type": "application/json",
+                "origin": "https://www.zerogpt.com",
+                "referer": "https://www.zerogpt.com/",
+                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            payload = {"input_text": text[:5000]}
+
+            r = requests.post(
+                "https://api.zerogpt.com/api/detect/detectText",
+                json=payload,
+                headers=headers,
+                timeout=20
+            )
+            r.raise_for_status()
+            data = r.json()
+
+            # ZeroGPT response fields
+            # data["data"]["isHuman"]      → 0.0 to 1.0 (1.0 = fully human)
+            # data["data"]["aiPercentage"] → 0 to 100 (AI probability)
+            # data["data"]["sentences"]    → list of flagged sentences
+
+            inner = data.get("data", data)
+
+            # Get AI percentage
+            ai_pct = inner.get("aiPercentage", None)
+            if ai_pct is None:
+                is_human = inner.get("isHuman", 0.5)
+                ai_pct   = round((1 - float(is_human)) * 100)
+            else:
+                ai_pct = round(float(ai_pct))
+
+            ai_pct = max(0, min(100, ai_pct))
+
+            # Get flagged sentences
+            flagged = inner.get("sentences", []) or inner.get("highlighted", []) or []
+            if isinstance(flagged, list):
+                indicators = []
+                for s in flagged[:4]:
+                    if isinstance(s, dict):
+                        txt = s.get("text", s.get("sentence", ""))
+                    else:
+                        txt = str(s)
+                    if txt:
+                        indicators.append(f'"{txt[:90].strip()}..."')
+            else:
+                indicators = []
+
+            if not indicators:
+                if ai_pct >= 70:
+                    indicators = ["Uniform structure and generic phrasing detected",
+                                  "Low sentence variation typical of AI writing"]
+                elif ai_pct >= 40:
+                    indicators = ["Some AI-like patterns present"]
+                else:
+                    indicators = ["No strong AI indicators found"]
+
+            # Human signals
+            human_sigs = []
+            if ai_pct < 50:
+                human_sigs = ["Natural sentence variation", "Authentic writing voice"]
+            elif ai_pct < 70:
+                human_sigs = ["Some natural phrasing detected"]
+
+            # Verdict
+            if ai_pct >= 80:   verdict = "AI Generated"
+            elif ai_pct >= 62: verdict = "Likely AI"
+            elif ai_pct >= 42: verdict = "Uncertain"
+            elif ai_pct >= 22: verdict = "Likely Human"
+            else:              verdict = "Human"
+
+            confidence = min(95, 50 + abs(ai_pct - 50))
+
+            return {
+                "verdict":        verdict,
+                "confidence":     round(confidence),
+                "probability_ai": ai_pct,
+                "indicators":     indicators,
+                "human_signals":  human_sigs,
+                "explanation":    f"ZeroGPT analysed the essay and estimated {ai_pct}% probability of AI generation.",
+                "_source":        "ZeroGPT"
+            }
+
+        except requests.exceptions.Timeout:
+            logger.warning("ZeroGPT timed out — falling back to rule engine")
+            return self._rule_engine_detect(text)
+        except requests.exceptions.ConnectionError:
+            logger.warning("ZeroGPT unreachable — falling back to rule engine")
+            return self._rule_engine_detect(text)
+        except Exception as e:
+            logger.warning(f"ZeroGPT failed ({e}) — falling back to rule engine")
+            return self._rule_engine_detect(text)
+
+    def _rule_engine_detect(self, text: str) -> dict:
+        """Fallback rule-based detection when ZeroGPT is unreachable."""
+        try:
+            rule = self._rule_based_ai_score(text)
+            prob = rule["score"]
+            if prob >= 80:   verdict = "AI Generated"
+            elif prob >= 62: verdict = "Likely AI"
+            elif prob >= 42: verdict = "Uncertain"
+            elif prob >= 22: verdict = "Likely Human"
+            else:            verdict = "Human"
+            return {
+                "verdict": verdict,
+                "confidence": min(90, 50 + abs(prob - 50)),
+                "probability_ai": prob,
+                "indicators": rule["indicators"] or ["No strong AI indicators found"],
+                "human_signals": ["Natural writing style"] if prob < 50 else [],
+                "explanation": f"Offline rule engine estimated {prob}% AI probability (ZeroGPT unavailable).",
+                "_source": "Rule Engine (offline)"
+            }
+        except Exception:
+            return {
+                "verdict": "Unknown", "confidence": 0, "probability_ai": 50,
+                "indicators": ["Detection unavailable"], "human_signals": [],
+                "explanation": "Detection could not complete.", "_source": "None"
+            }
+
+
+    def _call_ollama(self, prompt: str) -> str:
+        payload = {
+            "model": self._model, "prompt": prompt, "stream": False,
+            "options": {
+                "temperature": 0.1,   # slight randomness so not robotic, but mostly deterministic
+                "num_predict": 2500,
+                "seed": 42
+            }
+        }
+        try:
+            r = requests.post(f"{self._base_url}/api/generate", json=payload, timeout=180)
+            r.raise_for_status()
+            return r.json().get("response", "")
+        except requests.exceptions.ConnectionError:
+            raise ConnectionError(f"Cannot connect to Ollama at {self._base_url}. Run: ollama serve")
+        except requests.exceptions.Timeout:
+            raise TimeoutError("Ollama timed out. Try a smaller model.")
+
+# ── Singletons ────────────────────────────────────────────────
+history_manager = ChatHistoryManager(HISTORY_FILE)
+score_cache     = ScoreCache(CACHE_FILE)
+file_registry   = FileProcessorRegistry()
+evaluator       = EssayEvaluator()
+
+# ── Routes ────────────────────────────────────────────────────
+@app.route("/")
+def index(): return render_template("index.html")
+
+@app.route("/api/status")
+def status():
+    try:
+        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+        models = [m["name"] for m in r.json().get("models", [])]
+        return jsonify({"status": "connected", "models": models, "current_model": OLLAMA_MODEL})
+    except Exception as e:
+        return jsonify({"status": "disconnected", "error": str(e)}), 200
+
+@app.route("/api/model", methods=["POST"])
+def set_model():
+    m = request.json.get("model", "").strip()
+    if not m: return jsonify({"error": "No model"}), 400
+    evaluator._model = m; return jsonify({"model": m})
+
+@app.route("/api/sessions")
+def get_sessions(): return jsonify(history_manager.get_all_sessions())
+
+@app.route("/api/sessions", methods=["POST"])
+def create_session(): return jsonify(history_manager.create_session())
+
+@app.route("/api/sessions/<sid>")
+def get_session(sid):
+    s = history_manager.get_session(sid)
+    return jsonify(s) if s else (jsonify({"error": "Not found"}), 404)
+
+@app.route("/api/sessions/<sid>", methods=["DELETE"])
+def delete_session(sid):
+    return jsonify({"deleted": sid}) if history_manager.delete_session(sid) else (jsonify({"error": "Not found"}), 404)
+
+@app.route("/api/sessions/<sid>/title", methods=["PATCH"])
+def update_title(sid):
+    history_manager.update_title(sid, request.json.get("title", "").strip() or "Untitled")
+    return jsonify({"ok": True})
+
+@app.route("/api/evaluate", methods=["POST"])
+def evaluate_essay():
+    try:
+        sid        = request.form.get("session_id", "")
+        user_text  = request.form.get("text", "").strip()
+        rubric_raw = request.form.get("rubric", "")
+        file_obj   = request.files.get("file")
+        essay_text = ""; source_meta = {}
+
+        if file_obj and file_obj.filename:
+            fname = file_obj.filename; ext = Path(fname).suffix.lower()
+            if ext not in ALLOWED_EXT:
+                return jsonify({"error": f"File type {ext} not supported."}), 400
+            tmp = UPLOAD_FOLDER / f"{uuid.uuid4()}{ext}"
+            file_obj.save(str(tmp))
+            try:
+                essay_text  = file_registry.extract_text(tmp)
+                source_meta = {"source": "file", "filename": fname}
+            finally:
+                tmp.unlink(missing_ok=True)
+        elif user_text:
+            essay_text  = user_text
+            source_meta = {"source": "text"}
+        else:
+            return jsonify({"error": "Please provide essay text or upload a file."}), 400
+
+        if len(essay_text.strip()) < 50:
+            return jsonify({"error": "Essay too short (minimum 50 characters)."}), 400
+
+        rubric    = Rubric.from_dict(json.loads(rubric_raw) if rubric_raw else {})
+        cache_key = score_cache.make_key(essay_text, rubric)
+        cached    = score_cache.get(cache_key)
+
+        if cached:
+            logger.info(f"Cache HIT {cache_key[:12]} — returning stored result")
+            result = cached
+            # If old cached result is missing ai_detection, run it now and update cache
+            if "ai_detection" not in result or not result.get("ai_detection"):
+                logger.info("Cache result missing ai_detection — running detection now")
+                try:
+                    result["ai_detection"] = evaluator._detect_ai(essay_text)
+                    score_cache.set(cache_key, result)  # update cache with detection
+                except Exception as e:
+                    result["ai_detection"] = {
+                        "verdict": "Unknown", "confidence": 0, "probability_ai": 50,
+                        "indicators": ["Detection unavailable"], "human_signals": [],
+                        "explanation": str(e)
+                    }
+        else:
+            logger.info(f"Cache MISS {cache_key[:12]} — calling Ollama")
+            try:
+                result = evaluator.evaluate(essay_text, rubric)
+            except (ConnectionError, TimeoutError) as e:
+                return jsonify({"error": str(e)}), 503
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 422
+            score_cache.set(cache_key, result)
+
+        if not sid:
+            session = history_manager.create_session(); sid = session["id"]
+        else:
+            session = history_manager.get_session(sid)
+            if not session:
+                session = history_manager.create_session(); sid = session["id"]
+
+        display = (
+            f"[File: {source_meta.get('filename', 'uploaded')}]\n\n{essay_text[:300]}..."
+            if source_meta.get("source") == "file" else essay_text
+        )
+        history_manager.add_message(sid, "user", display, metadata=source_meta)
+        history_manager.add_message(sid, "assistant", result.get("summary", "Evaluation complete."), evaluation=result)
+
+        return jsonify({"session_id": sid, "evaluation": result, "from_cache": bool(cached)})
+
+    except Exception as e:
+        logger.exception("Evaluate error")
+        return jsonify({"error": f"Server error: {e}"}), 500
+
+@app.route("/api/chat", methods=["POST"])
+def chat():
+    try:
+        data    = request.json or {}
+        sid     = data.get("session_id", "")
+        message = data.get("message", "").strip()
+        if not message: return jsonify({"error": "Empty message"}), 400
+        session = history_manager.get_session(sid) if sid else None
+        if not session: session = history_manager.create_session(); sid = session["id"]
+        history_manager.add_message(sid, "user", message)
+        ctx = "".join(
+            f"{'User' if m['role']=='user' else 'Assistant'}: {m['content'][:400]}\n"
+            for m in session["messages"][-6:]
+        )
+        prompt = f"You are EssayMind, an expert writing tutor. Be specific and helpful.\n\nConversation:\n{ctx}\nUser: {message}\nAssistant:"
+        try:
+            raw = evaluator._call_ollama(prompt)
+        except (ConnectionError, TimeoutError) as e:
+            return jsonify({"error": str(e)}), 503
+        history_manager.add_message(sid, "assistant", raw)
+        return jsonify({"session_id": sid, "response": raw})
+    except Exception as e:
+        logger.exception("Chat error")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/cache/stats")
+def cache_stats(): return jsonify({"cached_essays": score_cache.size()})
+
+@app.route("/api/cache/clear", methods=["POST"])
+def clear_cache(): score_cache.clear(); return jsonify({"ok": True})
+
+if __name__ == "__main__":
+    import socket
+    # Get local IP so you can connect from phone on same WiFi
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        local_ip = "localhost"
+
+    print("\n  ◈ EssayMind is running!")
+    print(f"  Local:   http://localhost:5000")
+    print(f"  Network: http://{local_ip}:5000  ← open this on your phone")
+    print("\n  Make sure Ollama is running: ollama serve\n")
+    # host="0.0.0.0" = listen on all interfaces so phone can reach it
+    app.run(debug=True, port=5000, host="0.0.0.0")

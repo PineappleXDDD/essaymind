@@ -1,0 +1,186 @@
+{
+  "c4427da2-4b42-4450-aa8e-4107a5c67e56": {
+    "id": "c4427da2-4b42-4450-aa8e-4107a5c67e56",
+    "title": "testing an essay is like life its hard soft and li...",
+    "created": "2026-04-30T09:27:18.434678",
+    "updated": "2026-04-30T09:28:42.117457",
+    "messages": [
+      {
+        "id": "560a9ed1-ba55-4ee1-a39b-31b01dd1ee5f",
+        "role": "user",
+        "content": "testing an essay is like life its hard soft and like a ball",
+        "timestamp": "2026-04-30T09:28:42.116958",
+        "evaluation": null,
+        "metadata": {
+          "source": "text"
+        }
+      },
+      {
+        "id": "45594a06-1836-4e84-90af-c4da2a630fa1",
+        "role": "assistant",
+        "content": "The essay lacks focus and clarity, with vague statements and grammatical errors. The structure is also unclear, making it difficult to follow the author's argument. While there are some strengths in terms of style and tone, they are not enough to compensate for the overall weaknesses.",
+        "timestamp": "2026-04-30T09:28:42.117452",
+        "evaluation": {
+          "overall_score": 75,
+          "grade": "C+",
+          "summary": "The essay lacks focus and clarity, with vague statements and grammatical errors. The structure is also unclear, making it difficult to follow the author's argument. While there are some strengths in terms of style and tone, they are not enough to compensate for the overall weaknesses.",
+          "scores": {
+            "focus": {
+              "score": 75,
+              "feedback": "The essay lacks a clear central argument or thesis, instead relying on vague statements like 'testing an essay is like life.'"
+            },
+            "structure": {
+              "score": 75,
+              "feedback": "The introduction and body paragraphs are unclear, making it difficult to follow the author's argument. The conclusion is also lacking in terms of summarizing the main points."
+            },
+            "credibility": {
+              "score": 75,
+              "feedback": "There are no credible sources cited in the essay, which undermines its credibility."
+            },
+            "style": {
+              "score": 75,
+              "feedback": "The tone and voice are somewhat engaging, but the language is often informal and lacks precision."
+            },
+            "clarity": {
+              "score": 75,
+              "feedback": "The essay contains grammatical errors, such as 'like a ball' which disrupts the flow of the argument."
+            }
+          },
+          "errors": [
+            {
+              "type": "Grammar",
+              "text": "testing an essay is like life its hard soft and like a ball",
+              "issue": "The use of colloquial language and lack of punctuation makes the sentence difficult to understand.",
+              "suggestion": "Rewrite the sentence using proper grammar and punctuation, e.g. 'Testing an essay can be challenging due to its subjective nature.'"
+            }
+          ],
+          "recommendations": [
+            "Provide more specific examples to support the author's argument.",
+            "Consider adding a clear thesis statement to guide the reader through the essay.",
+            "Use credible sources to add credibility to the essay."
+          ],
+          "strengths": [
+            "The use of rhetorical devices, such as metaphors and allusions, adds depth and complexity to the essay.",
+            "The author's tone is engaging and relatable, making the essay more accessible to readers."
+          ],
+          "word_count": 13,
+          "char_count": 59,
+          "rubric_used": [
+            "Focus",
+            "Structure",
+            "Credibility",
+            "Style",
+            "Clarity"
+          ],
+          "ai_detection": {
+            "verdict": "Human",
+            "confidence": 95,
+            "probability_ai": 0,
+            "indicators": [
+              "No strong AI indicators found"
+            ],
+            "human_signals": [
+              "Natural sentence variation",
+              "Authentic writing voice"
+            ],
+            "explanation": "ZeroGPT analysed the essay and estimated 0% probability of AI generation.",
+            "_source": "ZeroGPT"
+          },
+          "_cached": true
+        },
+        "metadata": {}
+      }
+    ]
+  },
+  "2f7d5b06-14b2-4d99-982f-6c1643cbe4f3": {
+    "id": "2f7d5b06-14b2-4d99-982f-6c1643cbe4f3",
+    "title": "Life is not a straight path but a series of moment...",
+    "created": "2026-04-30T09:32:12.774840",
+    "updated": "2026-04-30T09:33:02.258229",
+    "messages": [
+      {
+        "id": "526b1277-8f0c-42fb-afa4-ad00081617f2",
+        "role": "user",
+        "content": "Life is not a straight path but a series of moments that shape who we become. It is filled with unexpected turns\u2014some leading to happiness, others to challenges that test our strength. At times, life feels easy and rewarding, while at other times it can be confusing and overwhelming. Yet, it is within these uncertainties that we truly discover our purpose and identity.\r\n\r\nEvery experience in life carries a lesson. Success teaches us confidence, while failure teaches us resilience and humility. People often try to avoid mistakes, but mistakes are a natural part of growth. They push us to reflect, improve, and try again. Without them, we would remain the same, never reaching our full potential.\r\n\r\nDreams also play an important role in life. They give us direction and something to strive for. However, achieving dreams requires patience, effort, and determination. There will always be obstacles along the way, but these challenges make success more meaningful. The journey toward our goals often matters more than the outcome itself.\r\n\r\nIn the end, life is about finding balance\u2014between ambition and contentment, independence and connection, strength and vulnerability. It is about appreciating what we have while working for what we want. When we learn to value both the good and the difficult moments, life becomes not just something we live through, but something we truly understand and cherish.",
+        "timestamp": "2026-04-30T09:33:02.257662",
+        "evaluation": null,
+        "metadata": {
+          "source": "text"
+        }
+      },
+      {
+        "id": "f1d1581d-4e6b-4130-bbba-ab2060bd7fd9",
+        "role": "assistant",
+        "content": "The essay explores life's journey as a series of moments that shape who we become, highlighting the importance of experiences, dreams, and balance in finding purpose and identity.",
+        "timestamp": "2026-04-30T09:33:02.258225",
+        "evaluation": {
+          "overall_score": 75,
+          "grade": "C+",
+          "summary": "The essay explores life's journey as a series of moments that shape who we become, highlighting the importance of experiences, dreams, and balance in finding purpose and identity.",
+          "scores": {
+            "focus": {
+              "score": 80,
+              "feedback": "The central argument is clear and well-supported, but could benefit from more nuanced exploration."
+            },
+            "structure": {
+              "score": 70,
+              "feedback": "The essay follows a logical flow, but the transitions between paragraphs could be smoother."
+            },
+            "credibility": {
+              "score": 75,
+              "feedback": "The use of evidence is adequate, but some supporting details could be more specific and relevant."
+            },
+            "style": {
+              "score": 80,
+              "feedback": "The writing style is engaging and expressive, with a clear tone and voice."
+            },
+            "clarity": {
+              "score": 70,
+              "feedback": "While the essay is generally well-written, there are a few instances of unclear or awkward phrasing that could be improved."
+            }
+          },
+          "errors": [
+            {
+              "type": "Grammar",
+              "text": "Life is not a straight path but a series of moments that shape who we become.",
+              "issue": "The sentence structure is a bit simplistic and lacks variety.",
+              "suggestion": "Consider rephrasing to create more interest and depth."
+            }
+          ],
+          "recommendations": [
+            "Consider adding more specific examples or anecdotes to support the central argument.",
+            "Revise paragraph transitions to improve the flow of ideas between paragraphs.",
+            "Provide more concrete evidence to back up claims about the importance of experiences, dreams, and balance."
+          ],
+          "strengths": [
+            "The essay effectively conveys a clear and relatable message about life's journey.",
+            "The writing style is engaging and expressive, making the essay enjoyable to read."
+          ],
+          "word_count": 225,
+          "char_count": 1408,
+          "rubric_used": [
+            "Focus",
+            "Structure",
+            "Credibility",
+            "Style",
+            "Clarity"
+          ],
+          "ai_detection": {
+            "verdict": "AI Generated",
+            "confidence": 95,
+            "probability_ai": 100,
+            "indicators": [
+              "Uniform structure and generic phrasing detected",
+              "Low sentence variation typical of AI writing"
+            ],
+            "human_signals": [],
+            "explanation": "ZeroGPT analysed the essay and estimated 100% probability of AI generation.",
+            "_source": "ZeroGPT"
+          },
+          "_cached": true
+        },
+        "metadata": {}
+      }
+    ]
+  }
+}
