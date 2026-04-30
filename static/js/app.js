@@ -844,12 +844,9 @@ class App {
     if (this.#isEvaluating) return;
     const text=document.getElementById("chatInput").value.trim();
     if (!text&&!this.#pendingFile) return;
-    // A file or any text longer than 30 words is always evaluated.
-    // Short follow-up messages (questions/comments) go to chat.
-    const wordCount = text.split(/\s+/).filter(Boolean).length;
-    const shouldEvaluate = this.#pendingFile || wordCount > 30;
-    if (shouldEvaluate) await this.#runEvaluation(text);
-    else await this.#runChat(text);
+    // Always run evaluation — never route to plain chat.
+    // The backend will return an error if the essay is too short (<50 chars).
+    await this.#runEvaluation(text);
   }
 
   async #runEvaluation(text) {
