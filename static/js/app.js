@@ -322,6 +322,9 @@ class MessageRenderer extends BaseComponent {
   showLoading()     { this.#loader.show(this.#container); this.#scroll(); }
   completeLoading() { this.#loader.complete(); }
   removeLoading()   { this.#loader.hide(); }
+  // Detach the loading indicator from the live DOM so an in-flight eval
+  // cannot write into a session it no longer owns.
+  detachFromDom()   { this.#loader.hide(); }
 
   appendUser(text, filename) {
     const display = filename ? `📎 ${filename}\n\n${text.slice(0,200)}${text.length>200?"…":""}` : text;
@@ -797,28 +800,29 @@ class App {
     document.getElementById("chatInput").focus();
   }
   async #loadSession(id) {
+    // Snapshot what's currently on screen before we do anything async,
+    // so if the eval finishes while we're loading the new session it has
+    // nothing live to corrupt.
+    this.#renderer.detachFromDom();
+
     this.#currentSessionId = id;
     this.#history.setActive(id);
     this.#closeMobileSidebar();
 
-    // If an evaluation is running in the background, detach its loading indicator
-    // so it does not bleed into the session we are switching to.
-    if (this.#isEvaluating) {
-      this.#renderer.removeLoading();
-    }
-
+    // Show a neutral loading state immediately — no blank screen
     this.#renderer.render();
     document.getElementById("welcomeScreen").classList.add("hidden");
     document.getElementById("topbarTitle").textContent = "Loading...";
 
     try {
       const s = await this.#api.getSession(id);
+      // If the user switched away again before this resolved, bail out
+      if (this.#currentSessionId !== id) return;
       if (!s || s.error) {
         document.getElementById("welcomeScreen").classList.remove("hidden");
         document.getElementById("topbarTitle").textContent = "Evaluation";
         return;
       }
-      if (this.#currentSessionId !== id) return;
       document.getElementById("topbarTitle").textContent = s.title || "Evaluation";
       const msgs = s.messages || [];
       if (msgs.length > 0) {
@@ -901,15 +905,14 @@ class App {
           }
         }
       } else {
-        // User has navigated away — quietly remove the loading indicator
-        // from whatever session we're now on (it may not even be visible)
-        this.#renderer.removeLoading();
-        // Show a toast so user knows their other session finished
+        // User navigated away — the renderer has already been detached/cleared.
+        // Do NOT call removeLoading or append anything — nothing is ours to touch.
         showToast("✓ Evaluation complete in previous session");
       }
 
     } catch(err) {
       if (err.name === "AbortError") return;
+      // Only touch the DOM if we are still on the session that started this eval
       if (this.#currentSessionId === mySessionId) {
         this.#renderer.removeLoading();
         this.#renderer.appendError("Network error. Please try again.");
