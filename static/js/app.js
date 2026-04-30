@@ -285,6 +285,13 @@ class LoadingIndicator extends BaseComponent {
     document.getElementById("lcS3")?.classList.add("ls-active");
     clearInterval(this.#timer);
   }
+  showRetrying(attempt) {
+    const msgs = ["Rate limited — retrying…","Still retrying, please wait…","One more try…"];
+    this.#setText(msgs[Math.min(attempt, msgs.length-1)]);
+    // Pulse the bar to show activity
+    const bar = document.getElementById("lcBar");
+    if (bar) { bar.style.opacity="0.5"; setTimeout(()=>{ bar.style.opacity="1"; }, 600); }
+  }
   #animate() {
     let stepIdx=0;
     this.#timer = setInterval(() => {
@@ -321,14 +328,15 @@ class MessageRenderer extends BaseComponent {
 
   render()          { this.clear(); }
   clear()           { this.#container.innerHTML = ""; this.#ownerSessionId = null; }
-  showLoading()     { this.#loader.show(this.#container); this.#scroll(); }
-  completeLoading() { this.#loader.complete(); }
-  removeLoading()   { this.#loader.hide(); }
-  setOwner(sid)     { this.#ownerSessionId = sid; }
-  isOwnedBy(sid)    { return this.#ownerSessionId === sid; }
+  showLoading()        { this.#loader.show(this.#container); this.#scroll(); }
+  completeLoading()    { this.#loader.complete(); }
+  removeLoading()      { this.#loader.hide(); }
+  showRetrying(attempt){ this.#loader.showRetrying(attempt); }
+  setOwner(sid)        { this.#ownerSessionId = sid; }
+  isOwnedBy(sid)       { return this.#ownerSessionId === sid; }
   // Detach: stop the loading animation and clear ownership so an in-flight
   // eval cannot corrupt another session's view.
-  detachFromDom()   { this.#loader.hide(); this.#ownerSessionId = null; }
+  detachFromDom()      { this.#loader.hide(); this.#ownerSessionId = null; }
 
   appendUser(text, filename) {
     const display = filename ? `📎 ${filename}\n\n${text.slice(0,200)}${text.length>200?"…":""}` : text;
@@ -887,8 +895,19 @@ class App {
     document.getElementById("fileChips").style.display = "none";
     document.getElementById("fileChips").innerHTML = "";
 
+    // If the request takes >12s, the server is likely retrying a rate limit.
+    // Show a "retrying" animation so the user knows something is happening.
+    let retryHint = 0;
+    const retryTimer = setTimeout(() => {
+      if (this.#renderer.isOwnedBy(mySessionId)) this.#renderer.showRetrying(0);
+      retryHint = setTimeout(() => {
+        if (this.#renderer.isOwnedBy(mySessionId)) this.#renderer.showRetrying(1);
+      }, 8000);
+    }, 12000);
+
     try {
       const data = await this.#api.evaluate(form, signal);
+      clearTimeout(retryTimer); clearTimeout(retryHint);
 
       // Always update the sidebar so the session appears with its new title
       if (!data.error && data.session_id) {
@@ -903,7 +922,15 @@ class App {
         this.#renderer.removeLoading();
 
         if (data.error) {
-          this.#renderer.appendError(data.error);
+          // If it's a rate limit error that exhausted all retries, show friendly message
+          const isRateLimit = data.error.toLowerCase().includes("rate limit") || 
+                              data.error.includes("429") ||
+                              data.error.toLowerCase().includes("too many");
+          if (isRateLimit) {
+            this.#renderer.appendError("⏱ Groq is busy right now — please wait 10–15 seconds and try again.");
+          } else {
+            this.#renderer.appendError(data.error);
+          }
         } else {
           this.#currentSessionId = data.session_id;
           this.#renderer.setOwner(data.session_id);
@@ -921,6 +948,7 @@ class App {
       }
 
     } catch(err) {
+      clearTimeout(retryTimer); clearTimeout(retryHint);
       if (err.name === "AbortError") return;
       if (this.#renderer.isOwnedBy(mySessionId)) {
         this.#renderer.removeLoading();
