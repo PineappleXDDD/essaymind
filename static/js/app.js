@@ -317,14 +317,18 @@ class MessageRenderer extends BaseComponent {
     this.#container = document.getElementById("messages");
     this.#loader    = new LoadingIndicator(root);
   }
+  #ownerSessionId = null;   // which session currently owns this renderer
+
   render()          { this.clear(); }
-  clear()           { this.#container.innerHTML = ""; }
+  clear()           { this.#container.innerHTML = ""; this.#ownerSessionId = null; }
   showLoading()     { this.#loader.show(this.#container); this.#scroll(); }
   completeLoading() { this.#loader.complete(); }
   removeLoading()   { this.#loader.hide(); }
-  // Detach the loading indicator from the live DOM so an in-flight eval
-  // cannot write into a session it no longer owns.
-  detachFromDom()   { this.#loader.hide(); }
+  setOwner(sid)     { this.#ownerSessionId = sid; }
+  isOwnedBy(sid)    { return this.#ownerSessionId === sid; }
+  // Detach: stop the loading animation and clear ownership so an in-flight
+  // eval cannot corrupt another session's view.
+  detachFromDom()   { this.#loader.hide(); this.#ownerSessionId = null; }
 
   appendUser(text, filename) {
     const display = filename ? `📎 ${filename}\n\n${text.slice(0,200)}${text.length>200?"…":""}` : text;
@@ -636,6 +640,7 @@ class MessageRenderer extends BaseComponent {
       else if (m.evaluation) this.appendEvaluation(m.evaluation);
       else                   this.appendChat(m.content);
     });
+    this.#scroll();
   }
 }
 
@@ -800,23 +805,23 @@ class App {
     document.getElementById("chatInput").focus();
   }
   async #loadSession(id) {
-    // Snapshot what's currently on screen before we do anything async,
-    // so if the eval finishes while we're loading the new session it has
-    // nothing live to corrupt.
-    this.#renderer.detachFromDom();
-
     this.#currentSessionId = id;
     this.#history.setActive(id);
     this.#closeMobileSidebar();
 
-    // Show a neutral loading state immediately — no blank screen
+    // Detach the renderer from any in-flight eval so it cannot write back here.
+    // This clears ownership — the eval's isOwnedBy() check will now return false.
+    this.#renderer.detachFromDom();
+
+    // Clear the view and show a loading placeholder immediately (no blank screen)
     this.#renderer.render();
+    this.#renderer.setOwner(id);   // this session now owns the renderer
     document.getElementById("welcomeScreen").classList.add("hidden");
     document.getElementById("topbarTitle").textContent = "Loading...";
 
     try {
       const s = await this.#api.getSession(id);
-      // If the user switched away again before this resolved, bail out
+      // If user switched away again before this fetch resolved, bail out
       if (this.#currentSessionId !== id) return;
       if (!s || s.error) {
         document.getElementById("welcomeScreen").classList.remove("hidden");
@@ -828,6 +833,7 @@ class App {
       if (msgs.length > 0) {
         document.getElementById("welcomeScreen").classList.add("hidden");
         this.#renderer.loadMessages(msgs);
+        this.#renderer.setOwner(id);
       } else {
         document.getElementById("welcomeScreen").classList.remove("hidden");
       }
@@ -859,8 +865,11 @@ class App {
 
     this.#isEvaluating = true;
     this.#abortController = new AbortController();
-    const signal        = this.#abortController.signal;
-    const mySessionId   = this.#currentSessionId; // session this eval belongs to
+    const signal      = this.#abortController.signal;
+    const mySessionId = this.#currentSessionId;
+
+    // Mark the renderer as owned by this session so we can detect stale writes
+    this.#renderer.setOwner(mySessionId);
 
     document.getElementById("chatInput").value = ""; this.#resizeTa();
     document.getElementById("sendBtn").disabled = true;
@@ -881,14 +890,14 @@ class App {
     try {
       const data = await this.#api.evaluate(form, signal);
 
-      // Update the history sidebar regardless of which session is active now
+      // Always update the sidebar so the session appears with its new title
       if (!data.error && data.session_id) {
         const s = await this.#api.getSession(data.session_id);
         if (s) this.#history.addOrUpdate(s);
       }
 
-      // If user is still on the session this eval belongs to — show the result
-      if (this.#currentSessionId === mySessionId) {
+      // Only write to the DOM if the renderer still belongs to this eval's session
+      if (this.#renderer.isOwnedBy(mySessionId)) {
         this.#renderer.completeLoading();
         await sleep(400);
         this.#renderer.removeLoading();
@@ -897,6 +906,7 @@ class App {
           this.#renderer.appendError(data.error);
         } else {
           this.#currentSessionId = data.session_id;
+          this.#renderer.setOwner(data.session_id);
           this.#renderer.appendEvaluation(data.evaluation);
           const s = await this.#api.getSession(this.#currentSessionId);
           if (s) {
@@ -905,15 +915,14 @@ class App {
           }
         }
       } else {
-        // User navigated away — the renderer has already been detached/cleared.
-        // Do NOT call removeLoading or append anything — nothing is ours to touch.
-        showToast("✓ Evaluation complete in previous session");
+        // User navigated away — do not touch the DOM at all.
+        // The session this eval belongs to will show the result next time it is opened.
+        showToast("✓ Evaluation complete — check the session it was started in");
       }
 
     } catch(err) {
       if (err.name === "AbortError") return;
-      // Only touch the DOM if we are still on the session that started this eval
-      if (this.#currentSessionId === mySessionId) {
+      if (this.#renderer.isOwnedBy(mySessionId)) {
         this.#renderer.removeLoading();
         this.#renderer.appendError("Network error. Please try again.");
       }
