@@ -610,26 +610,30 @@ Keep ALL strings short. Truncated JSON cannot be parsed and wastes the evaluatio
         for attempt in range(retries):
             try:
                 r = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=60)
-                r.raise_for_status()
+                # Check status manually before raise_for_status so we always have `r`
+                if r.status_code == 429:
+                    if attempt < retries - 1:
+                        wait = int(r.headers.get("Retry-After", 2 ** (attempt + 1)))
+                        logger.warning(f"Groq rate limit — waiting {wait}s (attempt {attempt+1}/{retries})")
+                        time.sleep(wait)
+                        continue
+                    raise ConnectionError("Groq rate limit reached. Too many requests — please wait a moment and try again.")
+                if r.status_code == 401:
+                    raise ConnectionError("Invalid GROQ_API_KEY. Check your API key.")
+                if r.status_code != 200:
+                    raise ConnectionError(f"Groq API error {r.status_code}: {r.text[:200]}")
                 return r.json()["choices"][0]["message"]["content"]
+            except ConnectionError:
+                raise
             except requests.exceptions.ConnectionError:
                 raise ConnectionError("Cannot connect to Groq API. Check your internet connection.")
             except requests.exceptions.Timeout:
                 raise TimeoutError("Groq API timed out. Please try again.")
-            except requests.exceptions.HTTPError as e:
-                status = e.response.status_code if e.response else 0
-                if status == 401:
-                    raise ConnectionError("Invalid GROQ_API_KEY. Check your API key.")
-                elif status == 429:
-                    if attempt < retries - 1:
-                        # Respect Retry-After header if present, else back off exponentially
-                        wait = int(r.headers.get("Retry-After", 2 ** (attempt + 1)))
-                        logger.warning(f"Groq rate limit hit — waiting {wait}s before retry {attempt+1}/{retries-1}")
-                        time.sleep(wait)
-                        continue
-                    raise ConnectionError("Groq rate limit reached. Too many users at once — please wait a moment and try again.")
-                else:
-                    raise ConnectionError(f"Groq API error {status}: {e}")
+            except Exception as e:
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                raise ConnectionError(f"Groq request failed: {e}")
 
 # ── Singletons ────────────────────────────────────────────────
 history_manager = ChatHistoryManager(HISTORY_FILE)
