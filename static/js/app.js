@@ -917,7 +917,6 @@ class App {
       this.#isEvaluating = false;
       this.#abortController = null;
       document.getElementById("sendBtn").disabled = false;
-      }
     }
   }
 
