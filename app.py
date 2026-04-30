@@ -325,12 +325,13 @@ Respond with ONLY this JSON (no markdown, no explanation, no text before or afte
   ]
 }}
 
-IMPORTANT QUANTITY RULES based on the essay quality:
-- If overall_score < 50: provide 5-7 weaknesses (errors), 4-5 recommendations, 1-2 strengths
-- If overall_score 50-65: provide 3-5 weaknesses, 3-4 recommendations, 2-3 strengths  
-- If overall_score 65-80: provide 2-3 weaknesses, 2-3 recommendations, 3-4 strengths
-- If overall_score > 80: provide 1-2 weaknesses, 1-2 recommendations, 4-5 strengths
-Scale the feedback to match the quality — a poor essay needs more corrections, a great essay deserves more praise."""
+STRICT LENGTH LIMITS — stay within these or the response will be cut off:
+- summary: MAX 2 sentences
+- feedback per criterion: MAX 1 sentence, MAX 20 words
+- errors list: MAX 3 items total. Each field MAX 10 words.
+- recommendations: MAX 3 items, each MAX 20 words
+- strengths: MAX 3 items, each MAX 15 words
+Keep ALL strings short. Truncated JSON cannot be parsed and wastes the evaluation."""
 
     def evaluate(self, text: str, rubric: Rubric) -> dict:
         raw = self._call_groq(self.build_prompt(text, rubric))
@@ -399,35 +400,42 @@ Scale the feedback to match the quality — a poor essay needs more corrections,
         return result
 
     def parse_response(self, raw: str, default: dict = None) -> dict:
+        def try_json(s):
+            try: return json.loads(s)
+            except: return None
+
+        def repair(s):
+            """Close open strings, arrays, objects from a truncated JSON."""
+            buf = []; in_str = False; esc = False
+            for ch in s:
+                if esc: esc = False; buf.append(ch); continue
+                if ch == "\\": esc = True; buf.append(ch); continue
+                if ch == '"': in_str = not in_str
+                buf.append(ch)
+            if in_str: buf.append('"')          # close open string
+            t = "".join(buf).rstrip(", \n\r\t")
+            t += "]" * max(0, t.count("[") - t.count("]"))
+            t += "}" * max(0, t.count("{") - t.count("}"))
+            return t
+
         try:
             cleaned = re.sub(r"```(?:json)?\s*", "", raw)
             cleaned = re.sub(r"```\s*", "", cleaned).strip()
             start = cleaned.find("{")
             if start == -1:
-                raise ValueError("No { found")
-            depth = 0; end = -1; in_str = False; escape = False
-            for i, ch in enumerate(cleaned[start:], start):
-                if escape: escape = False; continue
-                if ch == "\\": escape = True; continue
-                if ch == '"' and not escape: in_str = not in_str; continue
-                if in_str: continue
-                if ch == "{": depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0: end = i + 1; break
-            if end == -1:
-                candidate = cleaned[start:]
-                opens = candidate.count("{"); closes = candidate.count("}")
-                candidate = candidate.rstrip(", \n\r\t")
-                candidate += "}" * (opens - closes)
-            else:
-                candidate = cleaned[start:end]
-            try: return json.loads(candidate)
-            except json.JSONDecodeError: pass
-            fixed = re.sub(r",\s*([}\]])", r"\1", candidate)
-            try: return json.loads(fixed)
-            except json.JSONDecodeError: pass
-            raise ValueError("Could not parse")
+                raise ValueError("No JSON object found")
+            cleaned = cleaned[start:]
+
+            r = try_json(cleaned); 
+            if r: return r
+            stripped = re.sub(r",\s*([}\]])", r"\1", cleaned)
+            r = try_json(stripped)
+            if r: return r
+            repaired = repair(cleaned)
+            repaired = re.sub(r",\s*([}\]])", r"\1", repaired)
+            r = try_json(repaired)
+            if r: return r
+            raise ValueError("All repair attempts failed")
         except Exception as e:
             if default is not None:
                 return default
@@ -596,7 +604,7 @@ Scale the feedback to match the quality — a poor essay needs more corrections,
             "model": self._model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.1,
-            "max_tokens": 4000,
+            "max_tokens": 6000,
             "seed": 42
         }
         try:
