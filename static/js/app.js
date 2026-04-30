@@ -844,12 +844,10 @@ class App {
     if (this.#isEvaluating) return;
     const text=document.getElementById("chatInput").value.trim();
     if (!text&&!this.#pendingFile) return;
-    // Always evaluate when a file is attached OR when the input looks like an essay
-    // (more than 60 words). Short messages in an existing session go to chat.
+    // A file or any text longer than 30 words is always evaluated.
+    // Short follow-up messages (questions/comments) go to chat.
     const wordCount = text.split(/\s+/).filter(Boolean).length;
-    const isFirst = !this.#currentSessionId||
-      (await this.#api.getSession(this.#currentSessionId))?.messages?.length===0;
-    const shouldEvaluate = this.#pendingFile || isFirst || wordCount > 60;
+    const shouldEvaluate = this.#pendingFile || wordCount > 30;
     if (shouldEvaluate) await this.#runEvaluation(text);
     else await this.#runChat(text);
   }
@@ -917,7 +915,7 @@ class App {
       if (err.name === "AbortError") return;
       if (this.#currentSessionId === mySessionId) {
         this.#renderer.removeLoading();
-        this.#renderer.appendError("Network error. Is Ollama running?");
+        this.#renderer.appendError("Network error. Please try again.");
       }
     } finally {
       this.#isEvaluating = false;
@@ -942,7 +940,7 @@ class App {
       }
     } catch {
       this.#renderer.removeLoading();
-      this.#renderer.appendError("Network error. Is Ollama running?");
+      this.#renderer.appendError("Network error. Please try again.");
     } finally { document.getElementById("sendBtn").disabled=false; }
   }
 
