@@ -817,8 +817,11 @@ class App {
   // ── Session management ──────────────────────────────────────
   async #newSession() {
     if (this.#isEvaluating) {
-      const ok = confirm("The AI is still evaluating your essay.\n\nCancel the evaluation and open a new session?");
-      if (!ok) return;
+      const confirmed = await showConfirmBanner(
+        "Evaluation in Progress",
+        "The AI is still evaluating your essay. Cancel it and open a new session?"
+      );
+      if (!confirmed) return;
       this.#userAborted = true;
       this.#abortController?.abort();
       this.#isEvaluating = false;
@@ -843,9 +846,12 @@ class App {
   async #loadSession(id) {
     if (id === this.#currentSessionId) return;
     if (this.#isEvaluating) {
-      const ok = confirm("The AI is still evaluating your essay.\n\nCancel the evaluation and switch session?");
-      if (!ok) {
-        this.#history.setActive(this.#currentSessionId); // revert sidebar highlight
+      const confirmed = await showConfirmBanner(
+        "Evaluation in Progress",
+        "The AI is still evaluating your essay. Cancel it and switch to this session?"
+      );
+      if (!confirmed) {
+        this.#history.setActive(this.#currentSessionId);
         return;
       }
       this.#userAborted = true;
@@ -941,7 +947,10 @@ class App {
     // Show a "retrying" animation so the user knows something is happening.
     let retryHint = 0;
     const retryTimer = setTimeout(() => {
-      if (this.#renderer.isOwnedBy(mySessionId)) this.#renderer.showRetrying(0);
+      if (this.#renderer.isOwnedBy(mySessionId)) {
+        this.#renderer.showRetrying(0);
+        showBanner({ title:"High Traffic", msg:"Groq is rate limiting — automatically retrying…", type:"info", progress:true, duration:0 });
+      }
       retryHint = setTimeout(() => {
         if (this.#renderer.isOwnedBy(mySessionId)) this.#renderer.showRetrying(1);
       }, 8000);
@@ -959,17 +968,18 @@ class App {
 
       // Only write to the DOM if the renderer still belongs to this eval's session
       if (this.#renderer.isOwnedBy(mySessionId)) {
+        hideBanner();
         this.#renderer.completeLoading();
         await sleep(400);
         this.#renderer.removeLoading();
 
         if (data.error) {
           // If it's a rate limit error that exhausted all retries, show friendly message
-          const isRateLimit = data.error.toLowerCase().includes("rate limit") || 
+          const isRateLimit = data.error.toLowerCase().includes("rate limit") ||
                               data.error.includes("429") ||
                               data.error.toLowerCase().includes("too many");
           if (isRateLimit) {
-            this.#renderer.appendError("⏱ Groq is busy right now — please wait 10–15 seconds and try again.");
+            showBanner({ title:"Rate Limited", msg:"Groq is busy — please wait 15 seconds and try again.", type:"error", duration:10000 });
           } else {
             this.#renderer.appendError(data.error);
           }
@@ -995,7 +1005,7 @@ class App {
       if (err.name === "AbortError" || this.#userAborted) return;
       if (this.#renderer.isOwnedBy(mySessionId)) {
         this.#renderer.removeLoading();
-        this.#renderer.appendError("Could not reach the server. If this is the first request in a while, the server may be waking up — please wait 20 seconds and try again.");
+        showBanner({ title:"Connection Error", msg:"Could not reach the server. It may be waking up — wait 20 seconds and try again.", type:"error", progress:false, duration:12000 });
       }
     } finally {
       this.#isEvaluating = false;
@@ -1060,10 +1070,101 @@ function escHtml(str) {
 }
 function fmtTime(d) { return d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}); }
 function sleep(ms)  { return new Promise(r=>setTimeout(r,ms)); }
-function showToast(msg) {
-  const t=document.createElement("div");
-  t.style.cssText="position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--ac);color:var(--tx-inv);padding:9px 20px;border-radius:99px;font-family:var(--font-display);font-size:13px;font-weight:600;box-shadow:var(--shadow);z-index:9999;animation:msgIn .2s var(--ease);white-space:nowrap;pointer-events:none;";
-  t.textContent=msg; document.body.appendChild(t); setTimeout(()=>t.remove(),2500);
+// ── Banner notification system ────────────────────────────────
+function showConfirmBanner(title, msg) {
+  return new Promise(resolve => {
+    const b  = document.getElementById("warnBanner");
+    const ti = document.getElementById("warnTitle");
+    const mi = document.getElementById("warnMsg");
+    if (!b) { resolve(window.confirm(msg)); return; }
+
+    clearTimeout(_bannerTimer);
+    b.className = "warn-banner warn-info";
+    b.querySelector(".warn-icon").textContent = "◈";
+    ti.textContent = title;
+
+    // Render message + action buttons
+    mi.innerHTML = `${escHtml(msg)}<div style="display:flex;gap:8px;margin-top:10px;">
+      <button id="warnConfirmYes" style="flex:1;padding:7px 0;background:var(--red);color:#fff;border:none;border-radius:var(--r-sm);font-family:var(--font-display);font-weight:700;font-size:12px;cursor:pointer;transition:opacity .15s;">Cancel Evaluation</button>
+      <button id="warnConfirmNo"  style="flex:1;padding:7px 0;background:var(--bg-h);color:var(--tx-2);border:1px solid var(--br);border-radius:var(--r-sm);font-family:var(--font-display);font-weight:600;font-size:12px;cursor:pointer;">Keep Waiting</button>
+    </div>`;
+
+    b.style.display = "flex";
+    requestAnimationFrame(() => b.classList.add("visible"));
+
+    const cleanup = (val) => {
+      hideBanner();
+      mi.innerHTML = "";
+      resolve(val);
+    };
+    document.getElementById("warnConfirmYes").onclick = () => cleanup(true);
+    document.getElementById("warnConfirmNo").onclick  = () => cleanup(false);
+  });
 }
+
+// ── Banner notification system ────────────────────────────────
+let _bannerTimer = null;
+function showBanner({ title, msg, type = "error", progress = false, duration = 6000 }) {
+  const b   = document.getElementById("warnBanner");
+  const ti  = document.getElementById("warnTitle");
+  const mi  = document.getElementById("warnMsg");
+  const ico = b.querySelector(".warn-icon");
+  if (!b) return;
+
+  clearTimeout(_bannerTimer);
+
+  // Set type
+  b.className = "warn-banner" + (type === "success" ? " warn-success" : type === "info" ? " warn-info" : "");
+  ico.textContent = type === "success" ? "✓" : type === "info" ? "◈" : "⚠";
+  ti.textContent  = title;
+  mi.textContent  = msg;
+
+  // Progress bar
+  let prog = b.querySelector(".warn-progress");
+  if (progress) {
+    if (!prog) {
+      prog = document.createElement("div");
+      prog.className = "warn-progress";
+      prog.innerHTML = '<div class="warn-progress-bar"></div>';
+      mi.after(prog);
+    }
+    prog.style.display = "";
+    // restart animation
+    const bar = prog.querySelector(".warn-progress-bar");
+    bar.style.animation = "none";
+    bar.offsetHeight;
+    bar.style.animation = "";
+  } else if (prog) {
+    prog.style.display = "none";
+  }
+
+  b.style.display = "flex";
+  requestAnimationFrame(() => b.classList.add("visible"));
+
+  if (duration > 0) {
+    _bannerTimer = setTimeout(() => hideBanner(), duration);
+  }
+}
+
+function hideBanner() {
+  const b = document.getElementById("warnBanner");
+  if (!b) return;
+  b.classList.remove("visible");
+  setTimeout(() => { b.style.display = "none"; }, 280);
+}
+
+function showToast(msg) {
+  // Route positive toasts through the banner as info
+  const isSuccess = msg.startsWith("✓") || msg.startsWith("📎");
+  const isWarn    = msg.startsWith("⚠");
+  showBanner({
+    title:    isSuccess ? "Done" : isWarn ? "Warning" : "Notice",
+    msg:      msg.replace(/^[✓⚠◈📎]\s*/,""),
+    type:     isSuccess ? "success" : isWarn ? "error" : "info",
+    duration: 3000
+  });
+}
+
+document.getElementById("warnClose")?.addEventListener("click", hideBanner);
 
 document.addEventListener("DOMContentLoaded", ()=>new App());

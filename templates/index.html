@@ -84,14 +84,14 @@
       <div class="welcome-inner">
         <div class="welcome-glyph">◈</div>
         <h2 class="welcome-h">Essay Evaluation AI</h2>
-        <p class="welcome-p">Upload an essay or paste text. The AI evaluates focus, structure, credibility, style, and clarity — powered by Groq AI &amp; ZeroGPT.</p>
+        <p class="welcome-p">Upload an essay or paste text. The AI evaluates focus, structure, credibility, style, and clarity — powered by Groq AI.</p>
         <div class="feature-grid">
           <div class="feat"><span>📄</span><span>PDF & DOCX</span></div>
           <div class="feat"><span>🖼</span><span>OCR Images</span></div>
           <div class="feat"><span>📊</span><span>Rubric Scoring</span></div>
           <div class="feat"><span>✏️</span><span>Weakness Check</span></div>
           <div class="feat"><span>💡</span><span>Recommendations</span></div>
-          <div class="feat"><span>🤖</span><span>AI Detector</span></div>
+          <div class="feat"><span>🕓</span><span>Saved History</span></div>
         </div>
       </div>
     </div>
@@ -159,6 +159,21 @@
     <div class="drop-icon">⬆</div>
     <div class="drop-label">Drop your file here</div>
     <div class="drop-sub">PDF · DOCX · TXT · Image</div>
+  </div>
+</div>
+
+
+<!-- ── WARNING / NOTIFICATION BANNER ──────────────────────────────────── -->
+<div class="warn-banner" id="warnBanner" style="display:none;" role="alert">
+  <div class="warn-inner">
+    <span class="warn-icon">⚠</span>
+    <div class="warn-body">
+      <div class="warn-title" id="warnTitle">Notice</div>
+      <div class="warn-msg"  id="warnMsg"></div>
+    </div>
+    <button class="warn-close" id="warnClose" aria-label="Dismiss">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>
   </div>
 </div>
 
