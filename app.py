@@ -121,12 +121,89 @@ class DocxProcessor(FileProcessor):
 
 class ImageProcessor(FileProcessor):
     _OK = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+    # Groq vision model — free with your existing GROQ_API_KEY
+    _GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+
     def can_process(self, ext): return ext.lower() in self._OK
     def extract_text(self, fp):
-        if not OCR_AVAILABLE: raise ValueError("Tesseract OCR not available.")
-        img = Image.open(str(fp)).convert("L")
-        text = pytesseract.image_to_string(img, config="--psm 3")
-        if not text.strip(): raise ValueError("No text detected in image.")
+        # Prefer Tesseract if available
+        if OCR_AVAILABLE:
+            try:
+                img = Image.open(str(fp)).convert("L")
+                text = pytesseract.image_to_string(img, config="--psm 3")
+                if text.strip(): return self._clean(text)
+            except Exception as e:
+                logger.warning(f"Tesseract failed ({e}), falling back to Groq Vision")
+
+        # Fall back to Groq Vision API (free, uses existing GROQ_API_KEY)
+        return self._groq_vision_extract(fp)
+
+    def _groq_vision_extract(self, fp: Path) -> str:
+        """Extract text from an image using Groq's free vision model."""
+        import base64
+        if not GROQ_API_KEY:
+            raise ValueError(
+                "Tesseract OCR is not installed and GROQ_API_KEY is not set. "
+                "Please set GROQ_API_KEY in your environment to enable image uploads."
+            )
+
+        ext = fp.suffix.lower()
+        mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                    ".webp": "image/webp", ".bmp": "image/png"}
+        media_type = mime_map.get(ext, "image/png")
+
+        # BMP → convert to PNG in memory (Groq doesn't support BMP)
+        if ext == ".bmp":
+            from io import BytesIO
+            try:
+                from PIL import Image as PilImage
+                img = PilImage.open(str(fp)).convert("RGB")
+                buf = BytesIO(); img.save(buf, format="PNG"); image_data = buf.getvalue()
+                media_type = "image/png"
+            except ImportError:
+                image_data = fp.read_bytes()
+        else:
+            image_data = fp.read_bytes()
+
+        b64 = base64.standard_b64encode(image_data).decode("utf-8")
+
+        payload = {
+            "model": self._GROQ_VISION_MODEL,
+            "max_tokens": 4096,
+            "temperature": 0.1,
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{media_type};base64,{b64}"}
+                    },
+                    {
+                        "type": "text",
+                        "text": (
+                            "Extract ALL text from this image exactly as written. "
+                            "Output only the raw text — no commentary, no markdown, "
+                            "no explanations. Preserve paragraphs and line breaks. "
+                            "If there is no readable text, reply with: [NO TEXT DETECTED]"
+                        )
+                    }
+                ]
+            }]
+        }
+
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        r = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=40)
+        if r.status_code != 200:
+            raise ValueError(f"Groq Vision API error {r.status_code}: {r.text[:200]}")
+
+        text = r.json()["choices"][0]["message"]["content"].strip()
+        if "[NO TEXT DETECTED]" in text or not text:
+            raise ValueError("No text detected in image.")
+        logger.info("Image text extracted via Groq Vision API")
         return self._clean(text)
 
 # ── ENCAPSULATION: Registry, Rubric, Cache, History ──────────
