@@ -766,9 +766,12 @@ def update_title(sid):
 @app.route("/api/evaluate", methods=["POST"])
 def evaluate_essay():
     try:
-        sid        = request.form.get("session_id", "")
-        user_text  = request.form.get("text", "").strip()
-        rubric_raw = request.form.get("rubric", "")
+        # Log incoming request details to help debug 400s on Render
+        logger.info(f"Evaluate request — content_type={request.content_type} form_keys={list(request.form.keys())} files={list(request.files.keys())}")
+
+        sid        = request.form.get("session_id") or ""
+        user_text  = (request.form.get("text") or "").strip()
+        rubric_raw = request.form.get("rubric") or ""
         file_obj   = request.files.get("file")
         essay_text = ""; source_meta = {}
 
@@ -776,17 +779,20 @@ def evaluate_essay():
             fname = file_obj.filename; ext = Path(fname).suffix.lower()
             if ext not in ALLOWED_EXT:
                 return jsonify({"error": f"File type {ext} not supported."}), 400
+            UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
             tmp = UPLOAD_FOLDER / f"{uuid.uuid4()}{ext}"
             file_obj.save(str(tmp))
             try:
                 essay_text  = file_registry.extract_text(tmp)
                 source_meta = {"source": "file", "filename": fname}
             finally:
-                tmp.unlink(missing_ok=True)
+                try: tmp.unlink()
+                except: pass
         elif user_text:
             essay_text  = user_text
             source_meta = {"source": "text"}
         else:
+            logger.warning(f"No text or file — form={dict(request.form)} files={list(request.files.keys())}")
             return jsonify({"error": "Please provide essay text or upload a file."}), 400
 
         if len(essay_text.strip()) < 50:
@@ -796,6 +802,7 @@ def evaluate_essay():
         try:
             rubric_data = json.loads(rubric_raw) if rubric_raw and rubric_raw.strip() else {}
         except (json.JSONDecodeError, ValueError):
+            logger.warning(f"Bad rubric JSON, using defaults. raw={rubric_raw[:80]}")
             rubric_data = {}
         rubric    = Rubric.from_dict(rubric_data)
         cache_key = score_cache.make_key(essay_text, rubric)

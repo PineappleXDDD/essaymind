@@ -154,6 +154,47 @@
 
 <div class="mob-overlay" id="mobOverlay"></div>
 
+<!-- ── PRIVACY CONSENT MODAL ────────────────────────────────────────────── -->
+<div class="modal-bg" id="privacyModal" style="display:none;z-index:2000;">
+  <div class="modal" style="max-width:520px;">
+    <div class="modal-head" style="border-bottom:none;padding-bottom:4px;">
+      <h3 style="display:flex;align-items:center;gap:8px;">
+        <span style="color:var(--ac);font-size:20px;">◈</span> Welcome to EssayMind
+      </h3>
+    </div>
+    <div style="padding:4px 22px 0;">
+      <p style="font-size:14px;color:var(--tx-2);line-height:1.65;margin-bottom:14px;">
+        Before using this application, please read and agree to our
+        <a href="/privacy" target="_blank" style="color:var(--ac);font-weight:600;">Privacy Policy</a>.
+      </p>
+      <div style="background:var(--bg-e);border:1px solid var(--br);border-radius:var(--r-lg);padding:16px 18px;font-size:13px;color:var(--tx-2);line-height:1.7;max-height:240px;overflow-y:auto;">
+        <strong style="color:var(--tx);font-family:var(--font-display);display:block;margin-bottom:8px;">Summary of our Privacy Policy</strong>
+        <p style="margin-bottom:8px;">EssayMind is a coursework project by Carl Adrian Baldonado (1CPE-A). By using this app, you acknowledge:</p>
+        <ul style="padding-left:18px;margin:0;display:flex;flex-direction:column;gap:6px;">
+          <li><strong>No personal data collected</strong> — no name, email, or account required. An anonymous browser cookie identifies your session.</li>
+          <li><strong>Essay text is processed externally</strong> — submitted essays are sent to <strong>Groq API</strong> (AI evaluation) and <strong>ZeroGPT</strong> (AI detection) over HTTPS. Do not submit sensitive or confidential documents.</li>
+          <li><strong>Local history only</strong> — evaluation history is stored on an ephemeral server and may be lost on restart. Local preferences are saved in your browser.</li>
+          <li><strong>You can delete your sessions</strong> — use the trash icon in the sidebar at any time.</li>
+          <li><strong>No passwords or API keys</strong> are ever collected from you.</li>
+        </ul>
+        <p style="margin-top:10px;">
+          For the full policy, visit <a href="/privacy" target="_blank" style="color:var(--ac);">essaymind/privacy</a>.
+          Contact: <a href="mailto:baldonadocarl12345@gmail.com" style="color:var(--ac);">baldonadocarl12345@gmail.com</a>
+        </p>
+      </div>
+    </div>
+    <div style="padding:16px 22px 20px;display:flex;flex-direction:column;gap:10px;">
+      <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-size:13.5px;color:var(--tx-2);">
+        <input type="checkbox" id="privacyCheck" style="margin-top:3px;accent-color:var(--ac);width:15px;height:15px;flex-shrink:0;" />
+        I have read and agree to the <a href="/privacy" target="_blank" style="color:var(--ac);margin-left:4px;">Privacy Policy</a>.
+      </label>
+      <button id="privacyAccept" class="btn-primary" disabled style="width:100%;padding:11px;font-size:14px;opacity:0.45;transition:opacity .2s;">
+        Accept &amp; Continue
+      </button>
+    </div>
+  </div>
+</div>
+
 <div class="drop-overlay" id="dropOverlay">
   <div class="drop-overlay-inner">
     <div class="drop-icon">⬆</div>
@@ -178,5 +219,33 @@
 </div>
 
 <script src="/static/js/app.js?v=9"></script>
+<script>
+  // ── Privacy consent gate ──────────────────────────────────────
+  (function(){
+    const CONSENT_KEY = "essaymind_privacy_v1";
+    const modal   = document.getElementById("privacyModal");
+    const check   = document.getElementById("privacyCheck");
+    const accept  = document.getElementById("privacyAccept");
+
+    // Enable/disable Accept button based on checkbox
+    check.addEventListener("change", function(){
+      accept.disabled = !this.checked;
+      accept.style.opacity = this.checked ? "1" : "0.45";
+    });
+
+    accept.addEventListener("click", function(){
+      if (!check.checked) return;
+      try { localStorage.setItem(CONSENT_KEY, "1"); } catch(e){}
+      modal.style.display = "none";
+    });
+
+    // Show modal if user hasn't consented yet
+    let consented = false;
+    try { consented = localStorage.getItem(CONSENT_KEY) === "1"; } catch(e){}
+    if (!consented) {
+      modal.style.display = "flex";
+    }
+  })();
+</script>
 </body>
 </html>
