@@ -50,8 +50,8 @@ def set_uid_cookie(response, uid):
     response.set_cookie("essaymind_uid", uid, max_age=365*24*3600, samesite="Lax")
     return response
 
-UPLOAD_FOLDER = Path("uploads")
-DATA_FOLDER   = Path("data")
+UPLOAD_FOLDER = Path(os.environ.get("UPLOAD_FOLDER", "uploads"))
+DATA_FOLDER   = Path(os.environ.get("DATA_FOLDER",   "data"))
 
 # ── Groq config ───────────────────────────────────────────────
 GROQ_API_KEY   = os.environ.get("GROQ_API_KEY", "")
@@ -66,8 +66,8 @@ GROQ_MODELS = [
 
 ALLOWED_EXT = {".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
-UPLOAD_FOLDER.mkdir(exist_ok=True)
-DATA_FOLDER.mkdir(exist_ok=True)
+UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
+DATA_FOLDER.mkdir(parents=True, exist_ok=True)
 
 HISTORY_FILE = DATA_FOLDER / "chat_history.json"
 CACHE_FILE   = DATA_FOLDER / "score_cache.json"
@@ -722,6 +722,9 @@ evaluator       = EssayEvaluator()
 @app.route("/")
 def index(): return render_template("index.html")
 
+@app.route("/privacy")
+def privacy(): return render_template("privacy.html")
+
 @app.route("/api/status")
 def status():
     if not GROQ_API_KEY:
@@ -787,9 +790,14 @@ def evaluate_essay():
             return jsonify({"error": "Please provide essay text or upload a file."}), 400
 
         if len(essay_text.strip()) < 50:
+            logger.warning(f"Essay too short: {len(essay_text.strip())} chars")
             return jsonify({"error": "Essay too short (minimum 50 characters)."}), 400
 
-        rubric    = Rubric.from_dict(json.loads(rubric_raw) if rubric_raw else {})
+        try:
+            rubric_data = json.loads(rubric_raw) if rubric_raw and rubric_raw.strip() else {}
+        except (json.JSONDecodeError, ValueError):
+            rubric_data = {}
+        rubric    = Rubric.from_dict(rubric_data)
         cache_key = score_cache.make_key(essay_text, rubric)
         cached    = score_cache.get(cache_key)
 
