@@ -770,6 +770,7 @@ def evaluate_essay():
         logger.info(f"Evaluate request — content_type={request.content_type} form_keys={list(request.form.keys())} files={list(request.files.keys())}")
 
         sid        = request.form.get("session_id") or ""
+        if sid in ("null", "undefined", "None"): sid = ""  # guard JS coercion bugs
         user_text  = (request.form.get("text") or "").strip()
         rubric_raw = request.form.get("rubric") or ""
         file_obj   = request.files.get("file")

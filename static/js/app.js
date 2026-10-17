@@ -43,7 +43,11 @@ class ApiClient {
           const text = await res.text();
           // Don't retry client errors (4xx) except 429
           if (res.status !== 429 && res.status < 500) {
-            return { error: `Server error ${res.status}. Please try again.` };
+            // Try to parse the real error message from the server JSON
+            try {
+              const j = JSON.parse(text);
+              return { error: j.error || `Server error ${res.status}.` };
+            } catch { return { error: `Server error ${res.status}.` }; }
           }
           lastErr = new Error(`HTTP ${res.status}`);
           if (attempt < MAX_RETRIES) { await sleep(2000 * (attempt + 1)); continue; }
@@ -934,7 +938,9 @@ class App {
     this.#renderer.showLoading();
 
     const form = new FormData();
-    if (this.#currentSessionId) form.append("session_id", this.#currentSessionId);
+    // Guard: only send session_id if it's a real UUID string, never null/"null"
+    if (this.#currentSessionId && this.#currentSessionId !== "null")
+      form.append("session_id", this.#currentSessionId);
     if (text) form.append("text", text);
     if (file) form.append("file", file);
     form.append("rubric", JSON.stringify(this.#rubric.toApiPayload()));
