@@ -796,9 +796,9 @@ def evaluate_essay():
             logger.warning(f"No text or file — form={dict(request.form)} files={list(request.files.keys())}")
             return jsonify({"error": "Please provide essay text or upload a file."}), 400
 
-        if len(essay_text.strip()) < 50:
+        if len(essay_text.strip()) < 20:
             logger.warning(f"Essay too short: {len(essay_text.strip())} chars")
-            return jsonify({"error": "Essay too short (minimum 50 characters)."}), 400
+            return jsonify({"error": f"Essay too short ({len(essay_text.strip())} characters). Please enter at least 20 characters."}), 400
 
         try:
             rubric_data = json.loads(rubric_raw) if rubric_raw and rubric_raw.strip() else {}
@@ -878,6 +878,9 @@ def chat():
     except Exception as e:
         logger.exception("Chat error")
         return jsonify({"error": str(e)}), 500
+
+@app.route("/api/ping")
+def ping(): return jsonify({"ok": True, "version": "2025-10-17-fix2"})
 
 @app.route("/api/cache/stats")
 def cache_stats(): return jsonify({"cached_essays": score_cache.size()})
