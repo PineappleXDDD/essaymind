@@ -55,13 +55,15 @@ DATA_FOLDER   = Path(os.environ.get("DATA_FOLDER",   "data"))
 
 # ── Groq config ───────────────────────────────────────────────
 GROQ_API_KEY   = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODEL     = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODEL     = os.environ.get("GROQ_MODEL", "llama3-70b-8192")
 GROQ_API_URL   = "https://api.groq.com/openai/v1/chat/completions"
 
 # Available Groq models (shown in sidebar dropdown)
 GROQ_MODELS = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
+    "llama3-70b-8192",
+    "llama3-8b-8192",
+    "mixtral-8x7b-32768",
+    "gemma2-9b-it",
 ]
 
 ALLOWED_EXT = {".pdf", ".docx", ".txt", ".png", ".jpg", ".jpeg", ".webp", ".bmp"}
