@@ -278,7 +278,7 @@ class LoadingIndicator extends BaseComponent {
     this.#el.id = "loadingMsg"; this.#el.className = "msg msg-ai";
     this.#el.innerHTML = `
       <div class="msg-avatar lc-avatar">◈</div>
-      <div class="msg-body" style="max-width:100%;">
+      <div class="msg-body" style="max-width:100%;display:flex;flex-direction:column;gap:12px;">
         <div class="loading-card">
           <div class="lc-top">
             <span class="lc-status" id="lcStatus">Preparing evaluation…</span>
@@ -290,6 +290,34 @@ class LoadingIndicator extends BaseComponent {
             <span class="lc-step ls-active" id="lcS1">Analysing</span>
             <span class="lc-step" id="lcS2">Scoring</span>
             <span class="lc-step" id="lcS3">Complete</span>
+          </div>
+        </div>
+        <div class="skeleton-card">
+          <div class="sk-header">
+            <div class="sk sk-circle"></div>
+            <div class="sk-header-text">
+              <div class="sk sk-line wide"></div>
+              <div class="sk sk-line mid"></div>
+              <div class="sk sk-line short"></div>
+            </div>
+          </div>
+          <div class="sk-bars">
+            <div class="sk-bar-row"><div class="sk sk-bar-label"></div><div class="sk sk-bar-track"></div><div class="sk sk-bar-val"></div></div>
+            <div class="sk-bar-row"><div class="sk sk-bar-label"></div><div class="sk sk-bar-track"></div><div class="sk sk-bar-val"></div></div>
+            <div class="sk-bar-row"><div class="sk sk-bar-label"></div><div class="sk sk-bar-track"></div><div class="sk sk-bar-val"></div></div>
+            <div class="sk-bar-row"><div class="sk sk-bar-label"></div><div class="sk sk-bar-track"></div><div class="sk sk-bar-val"></div></div>
+            <div class="sk-bar-row"><div class="sk sk-bar-label"></div><div class="sk sk-bar-track"></div><div class="sk sk-bar-val"></div></div>
+          </div>
+          <div class="sk-chips">
+            <div class="sk sk-chip c1"></div>
+            <div class="sk sk-chip c2"></div>
+            <div class="sk sk-chip c3"></div>
+            <div class="sk sk-chip c4"></div>
+          </div>
+          <div class="sk-block">
+            <div class="sk sk-line wide thin"></div>
+            <div class="sk sk-line thin"></div>
+            <div class="sk sk-line thin"></div>
           </div>
         </div>
       </div>`;
