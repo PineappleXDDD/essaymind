@@ -681,12 +681,12 @@ Keep ALL strings short. Truncated JSON cannot be parsed and wastes the evaluatio
             "model": self._model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.1,
-            "max_tokens": 6000,
+            "max_tokens": 2048,
             "seed": 42
         }
         for attempt in range(retries):
             try:
-                r = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=60)
+                r = requests.post(GROQ_API_URL, json=payload, headers=headers, timeout=25)
                 # Check status manually before raise_for_status so we always have `r`
                 if r.status_code == 429:
                     if attempt < retries - 1:
@@ -823,13 +823,18 @@ def evaluate_essay():
                         "explanation": str(e)
                     }
         else:
-            logger.info(f"Cache MISS {cache_key[:12]} — calling Groq")
+            logger.info(f"Cache MISS {cache_key[:12]} — calling Groq (model={evaluator._model})")
             try:
                 result = evaluator.evaluate(essay_text, rubric)
             except (ConnectionError, TimeoutError) as e:
+                logger.error(f"Groq call failed: {type(e).__name__}: {e}")
                 return jsonify({"error": str(e)}), 503
             except ValueError as e:
+                logger.error(f"Parse error: {e}")
                 return jsonify({"error": str(e)}), 422
+            except Exception as e:
+                logger.error(f"Unexpected error in evaluate: {type(e).__name__}: {e}", exc_info=True)
+                return jsonify({"error": f"Evaluation failed: {type(e).__name__}: {e}"}), 503
             score_cache.set(cache_key, result)
 
         uid = get_user_id()
