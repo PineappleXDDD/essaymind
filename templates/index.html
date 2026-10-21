@@ -17,7 +17,7 @@
 <body>
 
 <!-- ── SIDEBAR ─────────────────────────────────────────────────────────── -->
-<aside class="sidebar" id="sidebar">
+<aside class="sidebar" id="sidebar" role="complementary" aria-label="Session history and settings">
   <div class="sidebar-head">
     <div class="logo">
       <div class="logo-mark">◈</div>
@@ -54,10 +54,10 @@
 </aside>
 
 <!-- ── MAIN ────────────────────────────────────────────────────────────── -->
-<main class="main" id="main">
+<main class="main" id="main" role="main">
 
   <!-- Topbar -->
-  <header class="topbar">
+  <header class="topbar" role="banner">
     <button class="icon-btn" id="openSidebar" title="Open sidebar" style="display:none;">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
     </button>
@@ -80,19 +80,19 @@
   </header>
 
   <!-- Chat / Welcome area -->
-  <div class="chat-area" id="chatArea">
+  <div class="chat-area" id="chatArea" role="log" aria-live="polite" aria-label="Essay evaluation conversation">
     <div class="welcome" id="welcomeScreen">
       <div class="welcome-inner">
         <div class="welcome-glyph">◈</div>
         <h2 class="welcome-h">Essay Evaluation AI</h2>
         <p class="welcome-p">Upload an essay or paste text. The AI evaluates focus, structure, credibility, style, and clarity — powered by Groq AI.</p>
         <div class="feature-grid">
-          <div class="feat"><span>📄</span><span>PDF & DOCX</span></div>
-          <div class="feat"><span>🖼</span><span>OCR Images</span></div>
-          <div class="feat"><span>📊</span><span>Rubric Scoring</span></div>
-          <div class="feat"><span>✏️</span><span>Weakness Check</span></div>
-          <div class="feat"><span>💡</span><span>Recommendations</span></div>
-          <div class="feat"><span>🕓</span><span>Saved History</span></div>
+          <div class="feat" role="listitem"><span aria-hidden="true">📄</span><span>PDF &amp; DOCX</span></div>
+          <div class="feat" role="listitem"><span aria-hidden="true">🖼</span><span>OCR Images</span></div>
+          <div class="feat" role="listitem"><span aria-hidden="true">📊</span><span>Rubric Scoring</span></div>
+          <div class="feat" role="listitem"><span aria-hidden="true">✏️</span><span>Weakness Check</span></div>
+          <div class="feat" role="listitem"><span aria-hidden="true">💡</span><span>Recommendations</span></div>
+          <div class="feat" role="listitem"><span aria-hidden="true">🕓</span><span>Saved History</span></div>
         </div>
       </div>
     </div>
@@ -107,12 +107,17 @@
         <input type="file" id="fileInput" accept=".pdf,.docx,.txt,.png,.jpg,.jpeg,.webp,.bmp" style="display:none;" />
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
       </label>
-      <textarea id="chatInput" class="chat-input" rows="1" placeholder="Paste essay text, or drag & drop / paste a file…"></textarea>
-      <button class="send-btn" id="sendBtn" title="Evaluate">
+      <textarea id="chatInput" class="chat-input" rows="1" placeholder="Paste essay text, or drag & drop / paste a file…" aria-label="Essay text input" aria-multiline="true"></textarea>
+      <button class="send-btn" id="sendBtn" title="Evaluate essay" aria-label="Submit essay for evaluation">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
       </button>
     </div>
-    <p class="input-hint">By Carl Adrian Baldonado, 2CPE-A &nbsp;·&nbsp; <a href="/privacy" target="_blank" style="color:var(--tx-3);text-decoration:none;" onmouseover="this.style.color='var(--ac)'" onmouseout="this.style.color='var(--tx-3)'">Privacy Policy</a></p>
+    <p class="input-hint">
+      By Carl Adrian Baldonado, 2CPE-A &nbsp;·&nbsp;
+      <a href="/privacy" target="_blank" style="color:var(--tx-3);text-decoration:none;" onmouseover="this.style.color='var(--ac)'" onmouseout="this.style.color='var(--tx-3)'">Privacy Policy</a>
+      &nbsp;·&nbsp;
+      <a href="/terms" target="_blank" style="color:var(--tx-3);text-decoration:none;" onmouseover="this.style.color='var(--ac)'" onmouseout="this.style.color='var(--tx-3)'">Terms of Service</a>
+    </p>
   </div>
 </main>
 
@@ -186,8 +191,11 @@
     </div>
     <div style="padding:16px 22px 20px;display:flex;flex-direction:column;gap:10px;">
       <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-size:13.5px;color:var(--tx-2);">
-        <input type="checkbox" id="privacyCheck" style="margin-top:3px;accent-color:var(--ac);width:15px;height:15px;flex-shrink:0;" />
-        I have read and agree to the <a href="/privacy" target="_blank" style="color:var(--ac);margin-left:4px;">Privacy Policy</a>.
+        <input type="checkbox" id="privacyCheck" style="margin-top:3px;accent-color:var(--ac);width:15px;height:15px;flex-shrink:0;" aria-required="true" />
+        I have read and agree to the
+        <a href="/privacy" target="_blank" style="color:var(--ac);margin-left:4px;">Privacy Policy</a>
+        &nbsp;and&nbsp;
+        <a href="/terms" target="_blank" style="color:var(--ac);">Terms of Service</a>.
       </label>
       <button id="privacyAccept" class="btn-primary" disabled style="width:100%;padding:11px;font-size:14px;opacity:0.45;transition:opacity .2s;">
         Accept &amp; Continue
@@ -219,8 +227,40 @@
   </div>
 </div>
 
+<!-- ── COOKIE CONSENT BANNER ───────────────────────────────────────────── -->
+<div id="cookieBanner" role="dialog" aria-label="Cookie consent" aria-live="polite" style="display:none;position:fixed;bottom:0;left:0;right:0;z-index:3000;padding:12px 16px;background:var(--bg-s);border-top:1px solid var(--br);box-shadow:0 -4px 24px rgba(0,0,0,.3);">
+  <div style="max-width:860px;margin:0 auto;display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
+    <span style="font-size:20px;" aria-hidden="true">🍪</span>
+    <p style="flex:1;min-width:200px;font-size:13px;color:var(--tx-2);line-height:1.5;margin:0;">
+      EssayMind uses a session cookie to identify your browser anonymously — no personal data is stored.
+      Essay text is processed by <strong style="color:var(--tx);">Groq AI</strong> and <strong style="color:var(--tx);">ZeroGPT</strong>.
+      See our <a href="/privacy" target="_blank" style="color:var(--ac);">Privacy Policy</a> and
+      <a href="/terms" target="_blank" style="color:var(--ac);">Terms of Service</a>.
+    </p>
+    <div style="display:flex;gap:8px;flex-shrink:0;">
+      <a href="/privacy" target="_blank" style="padding:7px 14px;background:none;border:1px solid var(--br);border-radius:var(--r-md);color:var(--tx-2);font-family:var(--font-display);font-weight:600;font-size:12px;text-decoration:none;white-space:nowrap;">Learn More</a>
+      <button id="cookieAccept" style="padding:7px 16px;background:var(--ac);border:none;border-radius:var(--r-md);color:var(--tx-inv);font-family:var(--font-display);font-weight:700;font-size:12px;cursor:pointer;white-space:nowrap;">Accept</button>
+    </div>
+  </div>
+</div>
+
 <script src="/static/js/app.js?v=9"></script>
 <script>
+  // ── Privacy consent gate ──────────────────────────────────────
+  // ── Cookie consent banner ─────────────────────────────────────
+  (function(){
+    const COOKIE_KEY = "essaymind_cookie_v1";
+    const banner = document.getElementById("cookieBanner");
+    const accept = document.getElementById("cookieAccept");
+    let accepted = false;
+    try { accepted = localStorage.getItem(COOKIE_KEY) === "1"; } catch(e){}
+    if (!accepted) banner.style.display = "block";
+    accept.addEventListener("click", function(){
+      try { localStorage.setItem(COOKIE_KEY, "1"); } catch(e){}
+      banner.style.display = "none";
+    });
+  })();
+
   // ── Privacy consent gate ──────────────────────────────────────
   (function(){
     const CONSENT_KEY = "essaymind_privacy_v1";

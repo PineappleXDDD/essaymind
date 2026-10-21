@@ -726,6 +726,9 @@ def index(): return render_template("index.html")
 @app.route("/privacy")
 def privacy(): return render_template("privacy.html")
 
+@app.route("/terms")
+def terms(): return render_template("terms.html")
+
 @app.route("/api/status")
 def status():
     if not GROQ_API_KEY:
